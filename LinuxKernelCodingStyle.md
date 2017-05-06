@@ -1,7 +1,7 @@
 # Linux Kernel Coding Style
-# Linux Kernel Coding Style
 标签：[Kernel Coding_Style](https://www.kernel.org/doc/Documentation/CodingStyle)
 
+## 1. 缩进
 ## 1. 缩进
 缩进用 Tab, 并且Tab的宽度为8个字符
 swich 和 case对齐, 不用缩进
