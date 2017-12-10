@@ -16,8 +16,9 @@ Linux是为多用户多任务设计的操作系统, 所以存储资源要被多�
 本章将围绕这两大问题展开讨论，在讨论的过程中，会涉及到其他方面的技术问题。
 
 ### 4.1.1 虚拟内存、内核空间和用户空间
-
-从第二章我们知道，Linux简化了分段机制，使得虚地址与线性地址总是一致的。线性空间在32位平台上为4GB的固定大小，也就是Linux的虚拟地址空间也这么大。Linux内核将这4G字节的空间分为两部分。最高的1G字节（从虚地址0xC0000000到0xFFFFFFFF）供内核使用，称为“**内核空间**”。而较低的3G字节（从虚地址0x00000000到0xBFFFFFFF），供各个进程使用，称为“**用户空间**”。因为每个进程可以通过系统调用进入内核，因此,Linux内核空间由系统内的所有进程共享。于是，从具体进程的角度来看，每个进程可以拥有4G字节的**虚拟地址空间**(也叫**虚拟内存**)。图4.1 给出了进程虚拟地址空间示意图。
+针对不同的体系架构，线性空间有不同的大小。目前存在32位和64位两种体系架构，下边分别对其进行介绍。
+#### 1. 32位体系架构
+从第二章我们知道，Linux简化了分段机制，使得虚地址与线性地址总是一致的。虚拟地址空间在32位平台上为2^32字节（4GB）的固定大小，也就是Linux的虚拟地址空间也这么大。Linux内核将这4G字节的空间分为两部分。最高的1G字节（从虚地址0xC0000000到0xFFFFFFFF）供内核使用，称为“**内核空间**”。而较低的3G字节（从虚地址0x00000000到0xBFFFFFFF），供各个进程使用，称为“**用户空间**”。因为每个进程可以通过系统调用进入内核，因此,Linux内核空间由系统内的所有进程共享。于是，从具体进程的角度来看，每个进程可以拥有4G字节的**虚拟地址空间**(也叫**虚拟内存**)。图4.1 给出了进程虚拟地址空间示意图。
 
 <div style="text-align: center">
 <img src="4_1.png"/>
@@ -28,6 +29,30 @@ Linux是为多用户多任务设计的操作系统, 所以存储资源要被多�
 从图中可以看出，每个进程有各自的私有用户空间（0～3G），这个空间对系统中的其他进程是不可见的。最高的1GB内核空间则为所有进程以及内核所共享。另外，进程的“**用户空间**”也叫“**地址空间**”，在后面的叙述中，我们对这两个术语不再区分。
 
 图4.1也说明，用户空间不是进程共享的，而是进程隔离的。每个进程最大都可以有3GB的用户空间。一个进程对其中一个地址的访问，与其它进程对于同一地址的访问绝不冲突。比如，一个进程从其用户空间的地址0x1234ABCD处可以读出整数8，而另外一个进程从其用户空间的地址0x1234ABCD处可以读出整数20，这取决于进程自身的逻辑。
+
+#### 2. 64位体系架构
+类比于32位架构，有人就会说64位平台的Linux虚拟地址空间大小是2^64字节（16EB），这是多么大的空间呀！实际上真是如此吗？我们可以通过查阅AMD 64位架构手册(Intel架构也有同样的手册介绍，感兴趣的可以自己查阅)，有如下介绍：
+```
+Currently, the AMD64 architecture defines a mechanism for translating 48-bit virtual addresses to 52-bit physical addresses. The mechanism used to translate a full 64-bit virtual address is reserved and will be described in a future AMD64 architectural specification.
+```
+无论是Intel还是AMD平台其64位体系架构都是类似的，64位的虚拟地址空间中只使用了前48位，也就是着64位平台进程的虚拟地址空间大小为2^48=256T,其中规定48：63bit只能是全0或者全1，最低的128T为用户进程空间，从0x00000000 00000000 到 0x00007FFF FFFFFFFF；剩下的为内核空间，从0xFFFF8000 00000000 到 0xFFFFFFFF FFFFFFFF，供所有进程共享。 
+
+同样的，在Linux操作系统内核源码中也有对X86_64的线性地址空间布局（Documentation/x86/x86_64/mm.txt）的介绍说明，如下
+```
+0000000000000000 - 00007fffffffffff (=47 bits) user space, different per mm 
+hole caused by [48:63] sign extension 
+ffff800000000000 - ffff80ffffffffff (=40 bits) guard hole 
+ffff880000000000 - ffffc7ffffffffff (=64 TB) direct mapping of all phys. memory 
+ffffc80000000000 - ffffc8ffffffffff (=40 bits) hole 
+ffffc90000000000 - ffffe8ffffffffff (=45 bits) vmalloc/ioremap space 
+ffffe90000000000 - ffffe9ffffffffff (=40 bits) hole 
+ffffea0000000000 - ffffeaffffffffff (=40 bits) virtual memory map (1TB) 
+… unused hole … 
+ffffffff80000000 - ffffffffa0000000 (=512 MB)  kernel text mapping, from phys 0 
+ffffffffa0000000 - ffffffffff5fffff (=1525 MB) module mapping space 
+ffffffffff600000 - ffffffffffdfffff (=8 MB) vsyscalls 
+ffffffffffe00000 - ffffffffffffffff (=2 MB) unused hole
+```
 
 任意一个时刻，在一个CPU上只有一个进程在运行。所以对于此CPU来讲，在这一时刻，整个系统只存在一个4GB的虚拟地址空间，这个虚拟地址空间是面向此进程的。当进程发生切换的时候，虚拟地址空间也随着切换。由此可以看出，每个进程都有自己的虚拟地址空间，只有此进程运行的时候，其虚拟地址空间才被运行它的CPU所知。在其它时刻，其虚拟地址空间对于CPU来说，是不可知的。所以尽管每个进程都可以有4GB的虚拟地址空间，但在CPU眼中，只有一个虚拟地址空间存在。虚拟地址空间的变化，随着进程切换而变化。
 
