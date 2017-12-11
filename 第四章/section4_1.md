@@ -64,45 +64,58 @@ ffffffffffe00000 - ffffffffffffffff (=2 MB) unused hole
 
 内核空间对所有的进程都是共享的，其中存放的是内核代码和数据，而进程的用户空间中存放的是用户程序的代码和数据，不管是内核程序还是用户程序，它们被编译和连接以后，所形成的指令和符号地址都是**虚地址**（参见2.5节中的例子），而不是物理内存中的物理地址。
 
-在32位架构时，内核空间占据了每个虚拟空间中的最高1GB字节，但映射到物理内存却总是从最低地址（0x00000000）开始的，如图4.2所示，之所以这么规定，是为了在内核空间与物理内存之间建立简单的线性映射关系。其中，3GB（0xC0000000）就是物理地址与虚拟地址之间的位移量，在Linux代码中就叫做PAGE_OFFSET。
+在32位架构时，内核空间占据了每个虚拟空间中的最高1GB字节，但映射到物理内存却总是从最低地址（0x00000000）开始的，如图4.2所示，之所以这么规定，是为了在内核空间与物理内存之间建立简单的线性映射关系。其中，3GB（0xC0000000）就是物理地址与虚拟地址之间的偏移量，在Linux代码中就叫做PAGE_OFFSET。
 
 <div style="text-align: center">
 <img src="4_2.png"/>
 </div>
 
-<center>图4.2内核的虚拟地址空间到物理地址空间的映射</center>
+<center>图4.2 32bit内核的虚拟地址空间到物理地址空间的映射</center>
 
-我们来看一下在page.h头文件中对内核空间中地址映射的说明及定义：
 
+在64位架构时，内核空间占据虚拟地址空间的高128TB大小，映射到物理内存同样也是从最低地址（0x00000000 00000000）开始的，结合上一小节讲述可知64位虚拟地址空间直接映射物理内存区域可达64T，且如今很少有物理内存达到该大小，所以相比于32位架构来说不再需要ZONE_HIGHMEM，因而其内核空间到物理内存的简单映射关系如图44所示。其中 0xffff880000000000 就是物理内存与虚拟地址的偏移量PAGE_OFFSET。
+
+<div style="text-align: center">
+<img src="44.png"/>
+</div>
+
+<center>图44 64bit内核的虚拟地址空间到物理地址空间的映射</center>
+
+
+我们来看一下在arch/x86/include/asm/Page_types.h头文件中对内核空间中地址映射的说明及定义：
 ```c
-#ifdef CONFIG_64BIT
-#define __PAGE_OFFSET	(0x40000000)	/* 1GB */
-#else
-#define __PAGE_OFFSET	(0x10000000)	/* 256MB */
-#endif
-
 #define PAGE_OFFSET		((unsigned long)__PAGE_OFFSET)
+```
+在arch/x86/include/asm/Page_32_types.h中如下：
+```c
+/*
+ * This handles the memory map.
+ *
+ * A __PAGE_OFFSET of 0xC0000000 means that the kernel has
+ * a virtual address space of one gigabyte, which limits the
+ * amount of physical memory you can use to about 950MB.
+ *
+ * If you want more physical memory than this then see the CONFIG_HIGHMEM4G
+ * and CONFIG_HIGHMEM64G options in the kernel configuration.
+ */
+#define __PAGE_OFFSET		_AC(CONFIG_PAGE_OFFSET, UL)
+```
 
-/* The size of the gateway page (we leave lots of room for expansion) */
-#define GATEWAY_PAGE_SIZE	0x4000
+在arch/x86/include/asm/Page_64_types.h中如下：
+```c
+#define __PAGE_OFFSET          _AC(0xffff880000000000, UL)
+```
 
-/* The start of the actual kernel binary---used in vmlinux.lds.S
- * Leave some space after __PAGE_OFFSET for detecting kernel null
- * ptr derefs */
-#define KERNEL_BINARY_TEXT_START	(__PAGE_OFFSET + 0x100000)
+在page.h中内核虚拟地址和物理地址映射的定义说明如下：
+```c
+#define __pa(x)		__phys_addr((unsigned long)(x))
+#define __pa_nodebug(x)	__phys_addr_nodebug((unsigned long)(x))
 
-/* These macros don't work for 64-bit C code -- don't allow in C at all */
-#ifdef __ASSEMBLY__
-#   define PA(x)	((x)-__PAGE_OFFSET)
-#   define VA(x)	((x)+__PAGE_OFFSET)
-#endif
-#define __pa(x)			((unsigned long)(x)-PAGE_OFFSET)
 #define __va(x)			((void *)((unsigned long)(x)+PAGE_OFFSET))
 ```
 
-对于内核空间而言，给定一个虚地址x，其物理地址为“x-PAGE_OFFSET”，给定一个物理地址x，其虚地址为“x+ PAGE_OFFSET”。
+对于内核空间而言，给定一个物理地址x，其虚地址为“x+ PAGE_OFFSET”，给定一个虚地址x，其物理地址一般为“x-PAGE_OFFSET”，
 
-在64位架构时，内核空间占据128TB大小
 
 例如，进程的页目录PGD（Page Global Directory）就处于内核空间中。在进程切换时，要将寄存器CR3设置成指向新进程的页目录PGD，而该目录的起始地址在内核空间中是虚地址，但CR3所需要的是物理地址，这时候就要用__pa()进行地址转换：
 
