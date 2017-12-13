@@ -71,31 +71,24 @@ int main(int argc,char **argv)
    ____________________________
 
    Stack Location:
-
    Initial end of stack:0xbffffab4
-
    new end of stack:0xbffffab0
 
    ____________________________
 
    Data Location:
-
    Address of data_var(Data Segment):0x8049758
-
    New end of data_var(Data Segment):0x804975c
 
    ____________________________
 
    BSS Location:
-
    Address of bss_var:0x8049864
 
    ____________________________
 
    Heap Location:
-
    Initial end of heap:0x8049868
-
    New end of heap:0x804986c
 ```
 
@@ -418,32 +411,21 @@ vm_operations结构中包含的是函数指针；其中，open、close分别用�
 
 ```c
 #include<stdio.h>
-
 #include<stdlib.h>
-
 #include<unistd.h>
  
 int main(int argc, char **argv)
-
 {
-
         int i;
-
         unsigned char *buff;
 
- 
-
         buff = (char *)malloc(sizeof(char)*1024);
-
         printf("My pid is :%dn", getpid());
 
         for (i = 0; i < 60; i++) {
-
                 sleep(60);
-
         }  
-
- 		return 0;
+ 	return 0;
 }
 ```
 
@@ -534,102 +516,95 @@ My pid is 9840 (在你的机器上可能是另一个pid值)
 在进程的task_struct（PCB）结构中，有如下定义：
 ```c
 struct task_struct {
-
 		……
-
 		struct mm_struct *mm; /*描述进程的整个用户空间*/
-
 		……
-
 }
 
 在stuct mm_struct 结构中，又有如下定义：
-
 struct mm_struct{
-
 		……
-
 		struct vm_area_struct * mmap; /*描述进程的虚存区*/
-
 		……
-
 }
 ```
 例4-2 编写一个内核模块，打印进程的虚存区，其中通过模块参数把进程的pid传递给模块
 
 ```c
-
-#include<linux/module.h>                     
-
+#include<linux/module.h>
 #include<linux/init.h>
-
 #include<linux/interrupt.h>
-
 #include<linux/sched.h>
+#include<linux/pid.h>
 
 static int pid;
-
 module_param(pid,int,0644);
 
 static int __init memtest_init(void)
-
 {
+      struct task_struct *p;
+      struct vm_area_struct *temp;
 
-        struct task_struct *p;
+      printk(KERN_INFO "The virtual memory areas(VMA) are:\n");
+      p = pid_task(find_vpid(pid), PIDTYPE_PID);
+      temp = p->mm->mmap;
 
-        struct vm_area_struct *temp;
-
- 
-
-        printk("The virtual memory areas(VMA) are:\n");
-
-        p = find_task_by_vpid(pid); /*该函数因内核版本而稍有不同*/
-
-        temp = p->mm->mmap;
-
-         while(temp) {
-
-                printk("start:%ptend:%pn", (unsigned long*)temp->vm_start,
-
-(unsigned long *)temp->vm_end);
-
-                temp = temp->vm_next;
-
-        }  
-
- 		return 0;
-
+    while(temp) {
+         printk(KERN_INFO "start:%p\tend:%p\n", (unsigned long*)temp->vm_start,(unsigned long *)temp->vm_end);
+         temp = temp->vm_next;
+    }
+    return 0;
 }
-
-static void __exit memtest_exit(void)
-
-{
-
-        printk("Unloading my module.\n");
-
-        return;
-
-}
-
-module_init(memtest_init);
-
-module_exit(memtest_exit);
-
-MODULE_LICENSE("GPL");
 
 ```        
 
 编译模块，运行例4-1中的程序,然后带参数插入模块，如下：
-
+```c
 $ ./exam &
-
-pid is :9413
-
-$ sudo insmod mem.ko pid=9413
-
+pid is :3114
+$ sudo insmod mem.ko pid=3114
 $dmesg
-
+[  157.185088] The virtual memory areas(VMA) are:
+[  157.185094] start:0000000000400000	end:0000000000401000
+[  157.185095] start:0000000000600000	end:0000000000601000
+[  157.185096] start:0000000000601000	end:0000000000602000
+[  157.185097] start:0000000001280000	end:00000000012a1000
+[  157.185098] start:00007f54976dd000	end:00007f5497899000
+[  157.185099] start:00007f5497899000	end:00007f5497a98000
+[  157.185100] start:00007f5497a98000	end:00007f5497a9c000
+[  157.185101] start:00007f5497a9c000	end:00007f5497a9e000
+[  157.185103] start:00007f5497a9e000	end:00007f5497aa3000
+[  157.185104] start:00007f5497aa3000	end:00007f5497ac6000
+[  157.185105] start:00007f5497ca7000	end:00007f5497caa000
+[  157.185106] start:00007f5497cc2000	end:00007f5497cc5000
+[  157.185107] start:00007f5497cc5000	end:00007f5497cc6000
+[  157.185108] start:00007f5497cc6000	end:00007f5497cc7000
+[  157.185109] start:00007f5497cc7000	end:00007f5497cc8000
+[  157.185110] start:00007fff0751f000	end:00007fff07540000
+[  157.185111] start:00007fff075f8000	end:00007fff075fa000
+```
 可以看出，输出的信息与前面从proc文件系统中所读取的信息是一致的。
+```c
+$sudo cat /proc/3114/maps
+00400000-00401000 r-xp 00000000 08:01 14947838                           /home/tiany/LKPA/4-2/exam
+00600000-00601000 r--p 00000000 08:01 14947838                           /home/tiany/LKPA/4-2/exam
+00601000-00602000 rw-p 00001000 08:01 14947838                           /home/tiany/LKPA/4-2/exam
+01280000-012a1000 rw-p 00000000 00:00 0                                  [heap]
+7f54976dd000-7f5497899000 r-xp 00000000 08:01 26873731                   /lib/x86_64-linux-gnu/libc-2.19.so
+7f5497899000-7f5497a98000 ---p 001bc000 08:01 26873731                   /lib/x86_64-linux-gnu/libc-2.19.so
+7f5497a98000-7f5497a9c000 r--p 001bb000 08:01 26873731                   /lib/x86_64-linux-gnu/libc-2.19.so
+7f5497a9c000-7f5497a9e000 rw-p 001bf000 08:01 26873731                   /lib/x86_64-linux-gnu/libc-2.19.so
+7f5497a9e000-7f5497aa3000 rw-p 00000000 00:00 0 
+7f5497aa3000-7f5497ac6000 r-xp 00000000 08:01 26873707                   /lib/x86_64-linux-gnu/ld-2.19.so
+7f5497ca7000-7f5497caa000 rw-p 00000000 00:00 0 
+7f5497cc2000-7f5497cc5000 rw-p 00000000 00:00 0 
+7f5497cc5000-7f5497cc6000 r--p 00022000 08:01 26873707                   /lib/x86_64-linux-gnu/ld-2.19.so
+7f5497cc6000-7f5497cc7000 rw-p 00023000 08:01 26873707                   /lib/x86_64-linux-gnu/ld-2.19.so
+7f5497cc7000-7f5497cc8000 rw-p 00000000 00:00 0 
+7fff0751f000-7fff07540000 rw-p 00000000 00:00 0                          [stack]
+7fff075f8000-7fff075fa000 r-xp 00000000 00:00 0                          [vdso]
+ffffffffff600000-ffffffffff601000 r-xp 00000000 00:00 0                  [vsyscall]
+```
 
 通过这个简单的例子可以看出，一个进程的虚拟地址空间是由一个个的虚存区组成。对进程用户空间的管理在很大程度上依赖于对虚存区的管理。
 
@@ -676,11 +651,8 @@ void *mmap(struct file * file,struct vm_area_struct * vma)
 其中参数fd代表一个已打开的文件，offset为文件的起点，而start为映射到用户空间的起始地址，length则为长度（以字节为单位）。参数prot表示对所映射区间的访问模式，如可写、可读、可执行等，而flags用于其他控制目的：
 
 MAP_SHARED：与子进程共享虚存区
-
 MAP_PRIVATE: 子进程对这个虚存区是“写时考贝”
-
 MAP_LOCKED：锁定这个虚存区，不能交换。
-
 MAP_ANONYMOUS：匿名区，与文件无关
 
 例4-3 映射一个4字节大小的匿名区，父进程和子进程**共享**这个匿名区：
@@ -689,26 +661,17 @@ MAP_ANONYMOUS：匿名区，与文件无关
 #define N 10
 
 int i,sum,fd;
-
 int *result_ptr = **mmap** (0, 4, PROT_READ | PROT_WRITE,MAP_SHARED |
 MAP_ANONYMOUS, 0, 0);
 
 int pid = fork();
-
 if (pid==0) { /*子进程，进行计算*/
-
-		for (sum=0,i=1; i<=N i++)
-
-				sum+=i;
-
-		*result_ptr = sum;
-
+	for (sum=0,i=1; i<=N i++)
+		sum+=i;
+	*result_ptr = sum;
 } else { /*父进程，等待计算结果*/
-
         wait(0);
-
-		printf(“result=%d\n”, *result_ptr);
-
+	printf(“result=%d\n”, *result_ptr);
 }
 ```
 
@@ -718,18 +681,13 @@ if (pid==0) { /*子进程，进行计算*/
 
 ```c
 int i,fd;
-
 char* buf;
 
 fd = open(“test-data”,O_RDONLY);
-
 buf = mmap (0, 12, PROT_READ,
-
 MAP_PRIVATE, fd, 0);
-
 for (i=0; i<12; i++)
-
-printf (“%c\n”,buf[i]);
+	printf (“%c\n”,buf[i]);
 ```
 
 把文件映射到进程的用户空间后，就可以像访问内存一样访问文件，如上例中把对文件的操作变为对数组的操作，而不必通过lseek(),read()或write()等进行文件操作。
