@@ -96,12 +96,54 @@ good_area:
     ……
 }
 ```
-在该函数中首先获取当前CPU正在运行的进程描述符task_struct、内存描述符mm_struct，从缺页线性地址寄存器cr2中读取引起异常的虚拟地址，接下来判断异常地址address位于内核空间还是位于用户空间：
-a. 地址位于内核空间，检查标志位确定是否在内核态触发异常，在内核态则可能是vmalloc 异常，调用vmalloc_fault()函数处理，否则调用spurious_fault()判断是不是由于陈旧的TLB（translation lookaside buffer，加速线性地址转换）页表缓存引起的伪异常。若以上原因都不是，则此次异常就是由于访问了非法地址造成的，调用bad_area_nosemaphore()函数处理。
+在该函数中首先获取当前CPU正在运行的进程描述符task_struct、内存描述符mm_struct，从缺页线性地址寄存器cr2中读取引起异常的虚拟地址，接下来判断异常地址address位于内核空间还是位于用户空间：    
+a. 地址位于内核空间，检查标志位确定是否在内核态触发异常，在内核态则可能是vmalloc 异常，调用vmalloc_fault()函数处理，否则调用spurious_fault()判断是不是由于陈旧的TLB（translation lookaside buffer，加速线性地址转换）页表缓存引起的伪异常。若以上原因都不是，则此次异常就是由于访问了非法地址造成的，调用bad_area_nosemaphore()函数处理。   
 b. 地址位于用户空间，会进行一系列异常原因判断（可能使用了保留位、发生在原子上下文或是一个内核线程），大部分情况会继续往下执行，寻找address所在的vma，若该address是位于vma有效区域内，则直接跳到good_area,调用handle_mm_fault()函数分配新的物理页框即可。
 
+接下来，主要关注用户空间的缺页异常情况，在handle_mm_fault()函数会进行pgd、pmd的分配，然后判断系统是否有使用大页（一般系统都使用4KB页面，如2MB或者4MB就称为大页，与4KB页面的分配有所区别，本书不详细讲解大页分配，感兴趣的学者可以自行查阅相关资料学习），若有使用大页就调用相应的函数进行物理页面的分配，否则调用handle_pte_fault()函数进行最终pte页表项的分配。
+```
+	if (!pte_present(entry)) {
+		//如果页表内容为空，则必须分配页框
+		if (pte_none(entry)) {
+			/*  如果进程实现了vma操作函数集合中的fault钩子函数，则该情况属于
+				 *  基于文件的内存映射，调用do_linear_fault分配物理页框，否则
+				 *  内核将调用针对匿名映射分配物理页框的函数do_anonymous_page
+				 */
+			if (vma->vm_ops) {
+				if (likely(vma->vm_ops->fault))
+					return do_linear_fault(mm, vma, address,
+						pte, pmd, flags, entry);
+			}
+			return do_anonymous_page(mm, vma, address,
+						 pte, pmd, flags);
+		}
+		/* 如果检测出该页表项为非线性映射，则调用do_nonlinear_fault分配物理页 */
+		if (pte_file(entry))
+			return do_nonlinear_fault(mm, vma, address,
+					pte, pmd, flags, entry);
+		/* 如果页框事先被分配，但是此刻已经由贮存换出到了外存，则调用do_swap_page完成页框分配 */
+		return do_swap_page(mm, vma, address,
+					pte, pmd, flags, entry);
+	}
 
-出错的地址位于内核地址空间且异常是在内核态触发的，此时可能就是由于vmalloc引起的缺页异 常，其用于是在内核空间中分配虚拟地址连续的物理内存。这里我们主要来关注下用户空间引发的缺页异常情况。
+	/* pte有映射物理页面，但是因为之前的pte设置为了只读，现在需要写操作，
+	 * 所以触发了写时复制缺页中断
+	 */
+	ptl = pte_lockptr(mm, pmd);
+	spin_lock(ptl);
+	if (unlikely(!pte_same(*pte, entry)))
+		goto unlock;
+	/* 异常由写访问触发,对应的页是不可写的，调用do_wp_page完成写时复制 */
+	if (flags & FAULT_FLAG_WRITE) { 
+		if (!pte_write(entry))
+			return do_wp_page(mm, vma, address,
+					pte, pmd, ptl, entry);
+		entry = pte_mkdirty(entry);
+	}	
+```
+handle_pte_fault函数中根据pte_present宏判断所需物理页是否在内存：    
+1.若不在内存中，页表为空，且实现了vma操作函数中的fault钩子函数，则属于文件内存映射，调用do_linear_fault分配物理页框；没有实现vm_ops操作函数集合时，则将调用匿名映射分配函数do_anonymous_page；若页表项为非线性映射，则调用do_nonlinear_fault分配物理页框；如果页框曾经被分配过，但是由于内存紧张等问题时换出到了外存，则调用do_swap_page完成。以上这几种技术就称为“**请求调页**”。
+2.在内存中，若异常由写访问触发FAULT_FLAG_WRITE，并且对应的页时不可写的，也就是被访问的页面在内存但是被标为只读，则调用do_wp_page函数完成，这种技术称为“**写时复制**”。
 
 实际上，缺页异常处理程序必须处理多种更细的特殊情况，它们不宜在总体方案中列出，详细流程图如图4.9。
 <div style="text-align: center">
