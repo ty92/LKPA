@@ -22,8 +22,86 @@
 
 <center>图4.8  缺页异常处理程序的总体方案</center>
 
-出错的地址位于内核地址空间且异常是在内核态触发的，此时可能就是由于vmalloc引起的缺页异常，其用于是在内核空间中分配虚拟地址连续的物理内存。这里我们主要来关注下用户空间引发的缺页异常情况。
+缺页异常处理程序do_page_fault()中主要调用__do_page_fault()函数实现，源代码中主要的语句如下：
+```
+static void __kprobes
+__do_page_fault(struct pt_regs *regs, unsigned long error_code)
+{
+     ……
+    //获取当前CPU正在运行的进程描述符，获取其内存描述符mm_struct
+    tsk = current;
+    mm = tsk->mm; 
 
+    /*从缺页线性地址寄存器cr2中获取错误的线性地址 */
+    address = read_cr2();
+    ……
+    //判断页访问出错的地址是不是位于内核地址空间,address>=TASK_SIZE_MAX
+    if (unlikely(fault_in_kernel_space(address))) {
+        //检查标志位确定触发异常时是否在内核态，
+        if (!(error_code & (PF_RSVD | PF_USER | PF_PROT))) {
+            /** error_code检查,满足 PF_RSVD  PF_USER  PF_PROT 三位均为0，含义如下
+                      未使用保留位、位于内核空间、页面没找到  */
+            if (vmalloc_fault(address) >= 0) //处理vmalloc异常
+                return;
+
+            if (kmemcheck_fault(regs, address, error_code))
+                return;
+        }
+
+        //异常发生在内核地址空间，但不属于上边的情况，可能是由陈旧的TLB条目造成的异常引起的
+        if (spurious_fault(error_code, address))
+            return;
+        ……
+        /* 函数执行到此处，则说明这次异常是由于访问了非法的地址造成的，
+        * 在内核中产生这种结果一般分用户空间和内核空间两种情况：
+              1.在用户空间访问，会直接发送SIGSEGV 段错误信号
+              2.在内核空间访问会分为两种情况：
+        *      a. 用户空间传递的系统调用参数，访问了无效的地址；
+        *      b. 内核的程序设计缺陷
+        */
+        bad_area_nosemaphore(regs, error_code, address);
+        return;
+    }
+    //为用户空间地址，若使用了保留位，打印信息，杀死当前进程
+    if (unlikely(error_code & PF_RSVD))
+        pgtable_bad(regs, error_code, address);
+    
+    /* 1. in_atomic()判断当前状态是否处于中断上下文或禁止抢占状态，如果是则说明系统运行在原子上下文；
+	     2. 如果当前进程中没有mm_struct 数据结构，说明这是一个内核线程
+	    满足1、2任何一个条件，则不能处理该错误  */
+    if (unlikely(in_atomic() || !mm)) { 
+        bad_area_nosemaphore(regs, error_code, address);
+        return;
+    }
+    ……
+    //寻找address所在的vma
+    vma = find_vma(mm, address);
+    if (unlikely(!vma)) {
+        bad_area(regs, error_code, address);
+        return;
+    }
+    //如果address地址大于当前vma的开始地址，则跳到good_area
+    if (likely(vma->vm_start <= address))
+        goto good_area;
+    ……
+good_area:
+    //再次验证权限
+    if (unlikely(access_error(error_code, vma))) {
+        bad_area_access_error(regs, error_code, address);
+        return;
+    }
+
+    //分配新页框
+    fault = handle_mm_fault(mm, vma, address, flags);
+    ……
+}
+```
+在该函数中首先获取当前CPU正在运行的进程描述符task_struct、内存描述符mm_struct，从缺页线性地址寄存器cr2中读取引起异常的虚拟地址，接下来判断异常地址address位于内核空间还是位于用户空间：
+a. 地址位于内核空间，检查标志位确定是否在内核态触发异常，在内核态则可能是vmalloc 异常，调用vmalloc_fault()函数处理，否则调用spurious_fault()判断是不是由于陈旧的TLB（translation lookaside buffer，加速线性地址转换）页表缓存引起的伪异常。若以上原因都不是，则此次异常就是由于访问了非法地址造成的，调用bad_area_nosemaphore()函数处理。
+b. 地址位于用户空间，会进行一系列异常原因判断（可能使用了保留位、发生在原子上下文或是一个内核线程），大部分情况会继续往下执行，寻找address所在的vma，若该address是位于vma有效区域内，则直接跳到good_area,调用handle_mm_fault()函数分配新的物理页框即可。
+
+
+出错的地址位于内核地址空间且异常是在内核态触发的，此时可能就是由于vmalloc引起的缺页异 常，其用于是在内核空间中分配虚拟地址连续的物理内存。这里我们主要来关注下用户空间引发的缺页异常情况。
 
 实际上，缺页异常处理程序必须处理多种更细的特殊情况，它们不宜在总体方案中列出，详细流程图如图4.9。
 <div style="text-align: center">
