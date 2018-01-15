@@ -201,7 +201,19 @@ struct page *alloc_pages(gfp_mask, order)
 alloc_pages()类函数和__get_free_pages()类函数，其功能都是从伙伴系统中分配2的order次方个页框，只是返回值有所区别，前者返回所分配的第一个页的线性地址，而后者是返回第一个页面的页描述符。其中gfp_mask是分配标志，表示对所分配内存的特殊要求。常用的标志为GFP_KERNEL和GFP_ATOMIC，前者表示在分配内存期间可以睡眠，在进程中使用；后者表示不可以睡眠。在中断处理程序中使用。 
 order是指数，所请求的页块大小为2的order次幂个物理页面，即页块在free_area数组中的索引。
 
-这两个函数最终都会调用__alloc_pages_nodemask()函数，该函数是伙伴算法的核心函数。首先会尝试分配物理页面，如果分配失败，则会进行物理内存的回收然后再尝试分配。在开始分配内存时会先寻找一个有足够空闲内存的区域，然后判断当前区域的空闲页面是否满足WMARK_LOW水位线，如果低于WMARK_LOW，则会先对内存进行回收，之后根据回收情况做出相应的操作，如果没有回收到内存、回收之后内存仍然不能满足，则说明当前zone的空闲内存不足，进行标记，下次分配时就可以将其忽略；如果内存回收后或者最开始就高于WMARK_LOW，也就是当前空闲内存足够分配，则调用buffered_rmqueue()进入伙伴算法的核心。
+这两个函数最终都会调用__alloc_pages_nodemask()函数，该函数是伙伴算法的核心函数。首先会调用get_page_from_freelist()函数尝试快速分配物理页面，如果分配失败，则会调用慢分配函数__alloc_pages_slowpath()进行内存分配。
+```c
+	page = get_page_from_freelist(gfp_mask|__GFP_HARDWALL, nodemask, order,
+			zonelist, high_zoneidx, alloc_flags,
+			preferred_zone, migratetype);
+	if (unlikely(!page)) {
+		gfp_mask = memalloc_noio_flags(gfp_mask);
+		page = __alloc_pages_slowpath(gfp_mask, order,
+				zonelist, high_zoneidx, nodemask,
+				preferred_zone, migratetype);
+	}
+```
+现在进入快速分配函数，其会先寻找一个有足够空闲内存的区域，然后判断当前区域的空闲页面是否满足WMARK_LOW水位线，如果低于WMARK_LOW，则会先对内存进行回收(如果允许回收)，之后根据回收情况做出相应的操作，如果没有回收到内存、回收之后内存仍然不能满足，则说明当前zone的空闲内存不足，进行标记，下次分配时就可以将其忽略；如果内存回收后或者最开始就高于WMARK_LOW，也就是当前空闲内存足够分配，则调用buffered_rmqueue()进入伙伴算法的核心。
 ```c
 for_each_zone_zonelist_nodemask(zone, z, zonelist,high_zoneidx, nodemask) {
    ……
@@ -256,6 +268,8 @@ for (current_order = order; current_order < MAX_ORDER; ++current_order) {
 3. 若当前order链表上没有空闲页框块，则order++，跳转更高阶数的链表上查找是否有空闲块；跳转至步骤2执行；若当前order>=MAX_ORDER，则跳转至步骤5；
 4. 若分配页框块所在链表的order大于请求值，还需要将剩余部分页框块添加到合适的阶数order链表上，页面分配成功，返回；
 5. 页面分配失败返回。
+
+若__rmqueue_smallest()函数中执行到了第5步，也就是页面分配失败了，则回溯到__alloc_pages_nodemask()函数中，调用__alloc_pages_slowpath()慢分配函数进行页框的分配，有代码中的unlikely()宏可知，这一步一般是不会执行到的，本书就不再讲解，感兴趣的读者可以自行研究。分配完内存，接下来肯定就得进行内存的回收，那么伙伴系统中是如何进行内存的回收呢？请看下一小节。
 
 ### 4.4.4 物理页面的回收 
 
