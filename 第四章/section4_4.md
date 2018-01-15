@@ -114,12 +114,14 @@ struct page *mem_map;
 
 Linux的伙伴算法把所有的空闲页面最小分为11个块链表，每个链表中的一个块含有2的幂次个页面，我们把这种块叫做“**页块**”或简称“块”。例如，第0个链表中块的大小都为2^0（1个页面），第1个链表中块的大小为都为2^1（2个页面），第10个链表中块的大小都为2^10（1024个页面）。
 
-伙伴系统所采用的数据结构是一个叫做 free_area 的数组，位于include/linux/Mmzone.h文件中。
+内核采用区块zone的方式来管理内存，和伙伴系统紧密相关的就是zone结构体中的 free_area 数组字段，位于include/linux/Mmzone.h文件中。
 
 ```c
 struct zone {
+	unsigned long watermark[NR_WMARK];  //在系统启动时每个zone都会计算出3个水位值，详情见在4.4.3小节
 	……
 	struct free_area	free_area[MAX_ORDER];
+	struct pglist_data	*zone_pgdat;
 	……
 }
 
@@ -191,112 +193,69 @@ free_area结构体有两个域：free_list和nr_free。free_list是一个链表�
 
 ### 4.4.3 物理页面的分配
 
-Linux使用伙伴算法有效地分配和回收物理页块。该算法试图分配由一个或多个连续物理页面组成的内存块，其大小为1页，2页，或4页等。只要系统有满足需要的足够的空闲页面，就会在free_area数组中查找满足需要大小的一个页块。
-
-函数__get_free_pages 用于物理页块的分配，其定义如下：
+Linux使用伙伴算法有效地分配和回收物理页块。该算法试图分配由一个或多个连续物理页面组成的内存块，其大小为1页，2页，或4页等。只要系统有满足需要的足够的空闲页面，就会在free_area数组中查找满足需要大小的一个页块。伙伴系统提供了多个供其他模块申请页框时使用的入口函数，大体上分为两类，如下所示：
 ```c
-unsigned long __get_free_pages(int gfp_mask, unsigned long order)
+unsigned long __get_free_pages(gfp_mask, order)  
+struct page *alloc_pages(gfp_mask, order) 
 ```
-其中gfp_mask是分配标志，表示对所分配内存的特殊要求。常用的标志为GFP_KERNEL和GFP_ATOMIC，前者表示在分配内存期间可以睡眠，在进程中使用；后者表示不可以睡眠。在中断处理程序中使用。
+alloc_pages()类函数和__get_free_pages()类函数，其功能都是从伙伴系统中分配2的order次方个页框，只是返回值有所区别，前者返回所分配的第一个页的线性地址，而后者是返回第一个页面的页描述符。其中gfp_mask是分配标志，表示对所分配内存的特殊要求。常用的标志为GFP_KERNEL和GFP_ATOMIC，前者表示在分配内存期间可以睡眠，在进程中使用；后者表示不可以睡眠。在中断处理程序中使用。 
+order是指数，所请求的页块大小为2的order次幂个物理页面，即页块在free_area数组中的索引。
 
-Order是指数，所请求的页块大小为2的order次幂个物理页面，即页块在free_area数组中的索引。
-
-该函数所做的工作如下：
-
-#### 1. 检查所请求的页块大小是否能够被满足：
-
+这两个函数最终都会调用__alloc_pages_nodemask()函数，该函数是伙伴算法的核心函数。首先会尝试分配物理页面，如果分配失败，则会进行物理内存的回收然后再尝试分配。在开始分配内存时会先寻找一个有足够空闲内存的区域，然后判断当前区域的空闲页面是否满足WMARK_LOW水位线，如果低于WMARK_LOW，则会先对内存进行回收，之后根据回收情况做出相应的操作，如果没有回收到内存、回收之后内存仍然不能满足，则说明当前zone的空闲内存不足，进行标记，下次分配时就可以将其忽略；如果内存回收后或者最开始就高于WMARK_LOW，也就是当前空闲内存足够分配，则调用buffered_rmqueue()进入伙伴算法的核心。
 ```c
-if (order >= 10)
-
-		goto nopage; /* 说明free_area数组中没有这么大的块*/
+for_each_zone_zonelist_nodemask(zone, z, zonelist,high_zoneidx, nodemask) {
+   ……
+     if (!(alloc_flags & ALLOC_NO_WATERMARKS)) {
+            unsigned long mark;
+            int ret;
+            mark = zone->watermark[alloc_flags & ALLOC_WMARK_MASK];
+            if (zone_watermark_ok(zone, order, mark,
+                    classzone_idx, alloc_flags))
+                goto try_this_zone;
+ ……
+try_this_zone:
+        page = buffered_rmqueue(preferred_zone, zone, order,
+                        gfp_mask, migratetype);
+……
 ```
-
-#### 2. 检查系统中空闲物理页的总数是否已低于允许的下界：
-
+因为物理内存是十分紧俏的系统资源，很容易被用完。而一旦内存被用完，当出现特殊情况时系统将无法处理，因此必须留下足够的内存以备急需。如上一步所示，系统确实会判断当前zone区域空闲内存是否足够，系统会根据物理内存实际情况划分出合理的水位线，当系统中空闲内存的数量太少时，要唤醒内核交换守护进程（kswapd），让其将内核中的某些页交换到外存，从而保证系统中有足够的空闲页块。为此，Linux系统定义了一个枚举类型变量zone_watermarks，其定义如下：
 ```c
-if (nr_free_pages > freepages.min) {
-
-		if (!low_on_memory)
-
-				goto ok_to_allocate;
-
-		if (nr_free_pages >= freepages.high) {
-
-				low_on_memory = 0;
-
-				goto ok_to_allocate;
-
-		}
-
-}
+enum zone_watermarks {
+    WMARK_MIN,
+    WMARK_LOW,
+    WMARK_HIGH,
+    NR_WMARK
+};
 ```
+WMARK_MIN表示当前可用内存的的最低限度，WMARK_LOW表示当前可用内存已经不多了，除非紧急情况，否则是不能继续分配的，WMARK_HIGH表示可用空闲内存足够，可以分配。
 
-因为物理内存是十分紧俏的系统资源，很容易被用完。而一旦内存被用完，当出现特殊情况时系统将无法处理，因此必须留下足够的内存以备急需。另外，当系统中空闲内存的数量太少时，要唤醒内核交换守护进程（kswapd），让其将内核中的某些页交换到外存，从而保证系统中有足够的空闲页块。为此，Linux系统定义了一个结构变量freepages。其定义如下：
+现在假如空闲内存足够，进入buffered_rmqueue()函数正常分配物理内存。该函数中会判断阶数order是否等于0（也就是分配单页），如果是0则从per-CPU中分配单页内存，否则调用__rmqueue()函数进行。在__rmqueue()函数中会先调用__rmqueue_smallest()函数在指定的迁移类型上分配内存，分配成功则返回页描述符，否则若迁移类型不是MIGRATE_RESERVE类型，就调用_rmqueue_fallback()函数在其它备用迁移类型的链表中进行内存分配。
 
+在指定迁移类型上分配内存的过程，就是伙伴算法分配内存的核心，如在4.4.2节中所描述的，__rmqueue_smallest()函数核心代码如下所示：
 ```c
-struct freepages_v1
-{
+for (current_order = order; current_order < MAX_ORDER; ++current_order) {
+		area = &(zone->free_area[current_order]);
+		if (list_empty(&area->free_list[migratetype]))
+			continue;
 
-		unsigned int min;
-
-		unsigned int low;
-
-		unsigned int high;
-
-} freepages_t;
-
-freepages_t freepages ；
+		page = list_entry(area->free_list[migratetype].next,
+							struct page, lru);
+		list_del(&page->lru);
+		rmv_page_order(page);
+		area->nr_free--;
+		expand(zone, page, order, current_order, area, migratetype);
+		return page;
+	}
 ```
+从当前指定的分配阶数order开始查找zone中的空闲链表，如果zone的当前order对应的空闲区free_area中相应migratetype类型的链表上没有空闲对象，那么就到更高分配阶所在链表上依次进行遍历。在每次遍历的分配阶数链表中，根据参数migratetype选择正确的迁移链表，若该迁移类型的链表不为空，就可以分配对应的页框块。一旦选定在当前遍历的阶数链表上分配页框，那么就通过list_entry()宏获取这个页框，然后通过list_del()宏将该页框块从链表上移除，最后设置页框描述符的_mapcount为-1，private字段为0，更新页框链表nr_free的值。
+在当前指定的order上没有足够空闲页框时，需要在更大阶数的链表上分配，此时就需要一个重要的步骤将大的页框块进行分割，将需要的页框块分配出去，将多余的页框块添加至合适的阶数所在链表中。这一重要的过程就是通过expand()函数完成。
 
-   这里划定了三条线：min、low和high。系统中空闲物理页数绝对不要少于freepages.min；当系统中空闲物理页数少于freepages.low时，开始强化交换；当空闲物理页数少于freepages.high时，启动后台交换；而当空闲物理页数大于freepages.high时，内核交换守护进程什么也不做。在系统初始化时，变量freepages被赋予了初值，其各个界限值的大小是根据实际的物理内存大小计算出来的。
-
-   全局变量nr_free_pages中记录的是系统中当前空闲的物理页数。
-
-   上面一段程序即使判断系统中空闲物理页数是否低于freepages.min界限，如果空闲物理页数大于freepages.min界限，则正常分配；否则，换页。
-
-#### 3. 正常分配。从free_area数组的第order项开始。
-
-##### 1. 如果该链表中有满足要求的页块，则：
-
-* 将其从链表中摘下；
-
-* 将free_area数组的位图中该页块所对应的位取反，表示页块已用；
-
-* 修改全局变量nr_free_pages（减去分配出去的页数）；
-
-* 根据该页块在mem_map数组中的位置，算出其起始物理地址，返回。
-
-##### 2. 如果该链表中没有满足要求的页块，则在free_area数组中顺序向上查找。其结果有二：
-
-a).  整个free_area数组中都没有满足要求的页块，此次无法分配，返回。
-
-b).  找到一个满足要求的页块，则：
-
-*   将其从链表中摘下；
-
-*   将free_area数组的位图中该页块所对应的位取反，表示页块已用；
-
-*   修改全局变量nr_free_pages（减去分配出去的页数）；
-
-*   因为页块比申请的页块要大，所以要将它分成适当大小的块。因为所有的页块都由2的幂次的页数组成，所以这个分割的过程比较简单，只需要将它平分就可以：
-
-a).  将其平分为两个伙伴，将小伙伴加入free_area数组中相应的链表，修改位图中相应的位；
-
-b).  如果大伙伴仍比申请的页块大，则转I，继续划分；
-
-c).  大伙伴的大小正是所要的大小，修改位图中相应的位,根据其在mem_map数组中的位置，算出它的起始物理地址，返回。
-
-##### 4. 换页。通过下列语句调用函数try_to_free_pages（），启动换页进程。
-```
-   try_to_free_pages(gfp_mask);
-```
-   该函数所做的工作非常简单：唤醒内核交换守护进程kswapd。
-```c
-   wake_up_process(kswapd_process);
-```
-   其中kswapd_process是指向内核交换守护进程kswapd的指针。
-
-例如在图4.10中，如果请求2页的内存块，第一个4页块（起始于页编号4）将会被分为两个2页块。起始于页号6的第二个2页块将会被返回给调用者，而第一个2页块（起始于页号4）将会排在free_area数组下表1中大小为2页的空闲块链表中。
+概括来该函数所做的工作如下几个步骤：
+1. 从order开始的空闲块链表上开始寻找空闲的块；
+2. 当前order链表上有空闲页框块，则移除空闲块，跳转至步骤4；
+3. 若当前order链表上没有空闲页框块，则order++，跳转更高阶数的链表上查找是否有空闲块；跳转至步骤2执行；若当前order>=MAX_ORDER，则跳转至步骤5；
+4. 若分配页框块所在链表的order大于请求值，还需要将剩余部分页框块添加到合适的阶数order链表上，页面分配成功，返回；
+5. 页面分配失败返回。
 
 ### 4.4.4 物理页面的回收 
 
