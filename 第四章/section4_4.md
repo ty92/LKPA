@@ -165,6 +165,10 @@ free_area结构体有两个域：free_list和nr_free。free_list是一个链表�
       <td>MIGRATE_MOVABLE</td>
       <td>可移动页: 可以随意的移动</td>
    </tr>
+    <tr>
+      <td>MIGRATE_PCPTYPES</td>
+      <td>用来表示每CPU页框高速缓存的数据结构中的链表的可移动类型数目</td>
+   </tr>
    <tr>
       <td>MIGRATE_RESERVE</td>
       <td>保留：如果向具有特定可移动性的列表请求分配内存失败，这种紧急情况下可以从MIGRATE_RESERVE分配内存</td>
