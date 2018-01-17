@@ -417,10 +417,10 @@ struct kmem_cache *kmem_cache_create(const char *name,
 
 当从内核卸载一个模块时，同时应当撤销为这个模块中的数据结构所建立的缓冲区，这是通过调用kmem_cache_destroy()函数来完成的。
 
-   创建缓冲区之后，就可以通过下列函数从中获取对象：
+   创建缓冲区之后，就可以通过下列函数从中获取对象，调用者提供从中分配的缓存区及一组标志flags：
 
 ```c
-   void *kmem_cache_alloc(kmem_cache_t *cachep, int flags)
+   void *kmem_cache_alloc(struct kmem_cache *cachep, gfp_t flags)
 ```
 
 该函数从给定的缓冲区cachep中返回一个指向对象的指针。如果缓冲区中所有的slab中都没有空闲的对象，那么
@@ -441,18 +441,15 @@ slab必须调用__get_free_pages()获取新的页面，flags是传递给该函�
    首先，内核用一个全局变量存放指向task_struct缓冲区的指针：
 
 ```c
-   kmem_cache_t *task_struct_cachep;
+   static struct kmem_cache *task_struct_cachep;
 ```
 
    内核初始化期间，在fork_init()中会创建缓冲区：
 
 ```c
-task_struct_cachep = kmem_cache_create(“task_struct”, sizeof(struct
-task_struct), 0, SLAB _HWCACHE_ALIGN,NULL,NULL)
-
-		if (!task_struct_cachep)
-
-  		printk(“fork_init(): cannot create task_sturct SLAB cache”);
+	task_struct_cachep =
+		kmem_cache_create("task_struct", sizeof(struct task_struct),
+			ARCH_MIN_TASKALIGN, SLAB_PANIC | SLAB_NOTRACK, NULL);
 ```
 
 这样就创建了一个名为task_struct_cachep的缓冲区，其中存放的就是类型为struct
@@ -462,17 +459,27 @@ NULL表示失败。在这种情况下，如果内核不能创建task_struct_cach
 每当进程调用fork()时，一定会创建一个新的进程控制块。这是在dup_task_sturct()中完成的，而该函数会被do_fork()调用：
 
 ```c
+//fork.c
 struct task_struct *tsk;
+int node = tsk_fork_get_node(orig);
 
-tsk = kmem_cache_alloc(task_struct_cachep, GFP_KERNEL);
+tsk = alloc_task_struct_node(node);;
 
 if (!tsk) {
+	/* 不能分配进程控制块*/
+	return NULL;
+}
 
-/* 不能分配进程控制块，清除，并返回错误码 */
-			
-		…
+static inline struct task_struct *alloc_task_struct_node(int node)
+{
+	return kmem_cache_alloc_node(task_struct_cachep, GFP_KERNEL, node);
+}
 
-		return NULL;
+//slab.h
+static inline void *kmem_cache_alloc_node(struct kmem_cache *cachep,
+					gfp_t flags, int node)
+{
+	return kmem_cache_alloc(cachep, flags);
 }
 ```
 
@@ -480,7 +487,10 @@ if (!tsk) {
 slab缓冲区。这是在free_task_struct()中执行的（这里，tsk是现有的进程）：
 
 ```c
-kmem_cache_free(task_struct_cachep, tsk);
+static inline void free_task_struct(struct task_struct *tsk)
+{
+	kmem_cache_free(task_struct_cachep, tsk);
+}
 ```
 
 由于进程控制块是内核的核心组成部分，时刻都要用到，因此task_struct_cachep缓冲区绝不会销毁。即使真能销毁，我们也要通过下列函数：
