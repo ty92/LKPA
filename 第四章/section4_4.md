@@ -331,44 +331,83 @@ Slab分配模式把对象分组放进缓冲区（尽管英文中使用了Cache�
 
 实际上，缓冲区就是主存中的一片区域，把这片区域划分为多个块，每块就是一个Slab，每个Slab由一个或多个页面组成，每个Slab中存放的就是对象。
 
-Linux把缓冲区分为专用和通用，它们分别用于不同的目的，下面给予说明。
+Linux把缓冲区分为专用和通用，它们分别用于不同的目的，专用slab用于特定的场合(如TCP、UDP等都有自己的专用缓冲区，当其需要小内存时，就会从自己的slab专用缓冲区中分配)，而通用缓冲区就是用于常规小内存的分配(如kmalloc)，我们可以通过/proc/slabinfo文件查看slab的状态，如下所示（部分显示）。
+```c
+# name            <active_objs> <num_objs> <objsize> <objperslab> <pagesperslab> : tunables <limit> <batchcount> <sharedfactor> : slabd
+ata <active_slabs> <num_slabs> <sharedavail>
+//专用缓冲区
+nf_conntrack_ffffffff81a9cd80     72     72    320   12    1 : tunables    0    0    0 : slabdata      6      6      0
+xfs_dqtrx              0      0    528   15    2 : tunables    0    0    0 : slabdata      0      0      0
+xfs_dquot              0      0    472   17    2 : tunables    0    0    0 : slabdata      0      0      0
+xfs_ili             1274   1274    152   26    1 : tunables    0    0    0 : slabdata     49     49      0
+UDPv6                 13     13   1216   13    4 : tunables    0    0    0 : slabdata      1      1      0
+tw_sock_TCPv6          0      0    256   16    1 : tunables    0    0    0 : slabdata      0      0      0
+TCPv6                 15     15   2176   15    8 : tunables    0    0    0 : slabdata      1      1      0
+UDP                   15     15   1088   15    4 : tunables    0    0    0 : slabdata      1      1      0
+tw_sock_TCP           32     32    256   16    1 : tunables    0    0    0 : slabdata      2      2      0
+TCP                   24     24   1984    8    4 : tunables    0    0    0 : slabdata      3      3      0
+dentry             26093  26103    192   21    1 : tunables    0    0    0 : slabdata   1243   1243      0
+buffer_head        24297  24297    104   39    1 : tunables    0    0    0 : slabdata    623    623      0
+vm_area_struct      3924   3924    216   18    1 : tunables    0    0    0 : slabdata    218    218      0
+mm_struct             40     40   1600   10    4 : tunables    0    0    0 : slabdata      4      4      0
+task_struct          113    128   4016    8    8 : tunables    0    0    0 : slabdata     16     16      0
+//通用缓冲区
+dma-kmalloc-8192       0      0   8192    4    8 : tunables    0    0    0 : slabdata      0      0      0
+dma-kmalloc-4096       0      0   4096    8    8 : tunables    0    0    0 : slabdata      0      0      0
+dma-kmalloc-2048       0      0   2048    8    4 : tunables    0    0    0 : slabdata      0      0      0
+dma-kmalloc-1024       0      0   1024    8    2 : tunables    0    0    0 : slabdata      0      0      0
+dma-kmalloc-512        8      8    512    8    1 : tunables    0    0    0 : slabdata      1      1      0
+dma-kmalloc-256        0      0    256   16    1 : tunables    0    0    0 : slabdata      0      0      0
+dma-kmalloc-128        0      0    128   32    1 : tunables    0    0    0 : slabdata      0      0      0
+dma-kmalloc-64         0      0     64   64    1 : tunables    0    0    0 : slabdata      0      0      0
+dma-kmalloc-32         0      0     32  128    1 : tunables    0    0    0 : slabdata      0      0      0
+dma-kmalloc-16         0      0     16  256    1 : tunables    0    0    0 : slabdata      0      0      0
+dma-kmalloc-8          0      0      8  512    1 : tunables    0    0    0 : slabdata      0      0      0
+dma-kmalloc-192        0      0    192   21    1 : tunables    0    0    0 : slabdata      0      0      0
+dma-kmalloc-96         0      0     96   42    1 : tunables    0    0    0 : slabdata      0      0      0
+kmalloc-8192          32     40   8192    4    8 : tunables    0    0    0 : slabdata     10     10      0
+kmalloc-4096         159    168   4096    8    8 : tunables    0    0    0 : slabdata     21     21      0
+kmalloc-2048         245    264   2048    8    4 : tunables    0    0    0 : slabdata     33     33      0
+kmalloc-1024         995   1000   1024    8    2 : tunables    0    0    0 : slabdata    125    125      0
+kmalloc-512          554    736    512    8    1 : tunables    0    0    0 : slabdata     92     92      0
+kmalloc-256         2426   2512    256   16    1 : tunables    0    0    0 : slabdata    157    157      0
+kmalloc-192         1875   1890    192   21    1 : tunables    0    0    0 : slabdata     90     90      0
+kmalloc-128         1110   1120    128   32    1 : tunables    0    0    0 : slabdata     35     35      0
+kmalloc-96          3948   3948     96   42    1 : tunables    0    0    0 : slabdata     94     94      0
+kmalloc-64         46579  46784     64   64    1 : tunables    0    0    0 : slabdata    731    731      0
+kmalloc-32        122752 122752     32  128    1 : tunables    0    0    0 : slabdata    959    959      0
+kmalloc-16         56320  56320     16  256    1 : tunables    0    0    0 : slabdata    220    220      0
+kmalloc-8          82432  82432      8  512    1 : tunables    0    0    0 : slabdata    161    161      0
+kmem_cache_node      128    128     64   64    1 : tunables    0    0    0 : slabdata      2      2      0
+kmem_cache            96     96    256   16    1 : tunables    0    0    0 : slabdata      6      6      0
+```
+如刚才所说，xfs_dquot、TCP、UDP等都是slab专用缓冲区，后边的如dma-kmalloc-32、kmalloc-32 就是slab通用缓冲区。注意kmalloc-x都对应一个dma-kmalloc-x类型的slab通用缓冲区，这种类型是使用了ZONE_DMA区域的内存，方便用于DMA模式申请内存。
 
 #### 1 Slab专用缓冲区的建立和释放
 
 专用缓冲区主要用于频繁使用的数据结构，如task_struct、mm_struct、vm_area_struct、 file、 dentry、
-inode等。缓冲区是用kmem_cache_t类型描述的，通过kmem_cache_create（）来建立，函数原型为：
+inode等。缓冲区是用struct kmem_cache结构体类型描述的，通过kmem_cache_create（）来建立，函数原型为：
 
 ```c
-kmem_cache_t *kmem_cache_create(const char *name, size_t size, size_t
-offset, unsigned long c_flags,
-
-void (*ctor) (void *objp, kmem_cache_t *cachep, unsigned long flags),
-
-void (*dtor) (void *objp, kmem_cache_t *cachep, unsigned long flags))
+struct kmem_cache *kmem_cache_create(const char *name, 
+		  size_t size, size_t align,
+		  unsigned long flags, void (*ctor)(void *))
 ```
-
    对其参数说明如下：
 
-   name： 缓冲区名 ( 19 个字符)
+   name： 缓冲区名，用于标示此缓冲，如/proc/slabinfo中的第一列
 
-   size： 对象大小
+   size： 要在此缓冲中创建的对象大小
 
-   offset： 在缓冲区内第一个对象的偏移，用来确定在页内进行对齐的位置，缺省为0，表示标准对齐。
+   align： 对象的对齐方式
 
-   c_flags： 对缓冲区的设置标志：
+   flags： 对缓冲区的设置标志：
 
-   SLAB_HWCACHE_ALIGN： 表示与第一个缓冲区中的缓冲行边界（16或32字节）对齐。
-   SLAB_NO_REAP： 不允许系统回收内存
-
-   SLAB_CACHE_DMA： 表示Slab使用的是DMA内存
-
-   ctor： 构造函数（一般都为NULL)
-
-   dtor： 析构函数（一般都为NULL)
-
-   objp： 指向对象的指针
- 
-   cachep： 指向缓冲区
+   SLAB_POISON： 使用一种已知模式填充slab，允许对缓存中的对象进行监视（网上的解释，自己不太确定）
+   SLAB_RED_ZONE： 在分配的内存周围插入“Red”,用来支持对缓冲区溢出的检查
+   SLAB_HWCACHE_ALIGN： 指定缓存对象必须与硬件缓存行对齐 
+     
+   ctor： 对象的构造函数（一般都为NULL)
 
 但是，函数kmem_cache_create（）所创建的缓冲区中还没有包含任何Slab，因此，也没有空闲的对象。只有以下两个条件都为真时，才给缓冲区分配Slab：
 
