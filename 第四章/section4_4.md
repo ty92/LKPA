@@ -205,7 +205,7 @@ struct page *alloc_pages(gfp_mask, order)
 alloc_pages()类函数和__get_free_pages()类函数，其功能都是从伙伴系统中分配2的order次方个页框，只是返回值有所区别，前者返回所分配的第一个页的线性地址，而后者是返回第一个页面的页描述符。其中gfp_mask是分配标志，表示对所分配内存的特殊要求。常用的标志为GFP_KERNEL和GFP_ATOMIC，前者表示在分配内存期间可以睡眠，在进程中使用；后者表示不可以睡眠。在中断处理程序中使用。 
 order是指数，所请求的页块大小为2的order次幂个物理页面，即页块在free_area数组中的索引。
 
-这两个函数最终都会调用__alloc_pages_nodemask()函数，该函数是伙伴算法的核心函数。首先会调用get_page_from_freelist()函数尝试快速分配物理页面，如果分配失败，则会调用慢分配函数__alloc_pages_slowpath()进行内存分配。
+这两个函数最终都会调用__alloc_pages()，该函数是__alloc_pages_nodemask()函数的封装，是伙伴算法的核心函数。首先会调用get_page_from_freelist()函数尝试快速分配物理页面，如果分配失败，则会调用慢分配函数__alloc_pages_slowpath()进行内存分配。
 ```c
 	page = get_page_from_freelist(gfp_mask|__GFP_HARDWALL, nodemask, order,
 			zonelist, high_zoneidx, alloc_flags,
@@ -424,7 +424,7 @@ struct kmem_cache *kmem_cache_create(const char *name,
 ```
 
 该函数从给定的缓冲区cachep中返回一个指向对象的指针。如果缓冲区中所有的slab中都没有空闲的对象，那么
-slab必须调用__get_free_pages()获取新的页面，flags是传递给该函数的值，一般应该是GFP_KERNEL或GFP_ATOMIC。
+slab必须调用__alloc_pages()获取新的页面，flags是传递给该函数的值，一般应该是GFP_KERNEL或GFP_ATOMIC。
 
    最后释放一个对象，并把它返回给原先的slab，这使用下面这个函数：
 
