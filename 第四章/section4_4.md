@@ -273,7 +273,7 @@ for (current_order = order; current_order < MAX_ORDER; ++current_order) {
 4. 若分配页框块所在链表的order大于请求值，还需要将剩余部分页框块添加到合适的阶数order链表上，页面分配成功，返回；
 5. 页面分配失败返回。
 
-若__rmqueue_smallest()函数中执行到了第5步，也就是页面分配失败了，则回溯到__alloc_pages_nodemask()函数中，调用__alloc_pages_slowpath()慢分配函数进行页框的分配，有代码中的unlikely()宏可知，这一步一般是不会执行到的，本书就不再讲解，感兴趣的读者可以自行研究。分配完内存，接下来肯定就得进行内存的回收，那么伙伴系统中是如何进行内存的回收呢？请看下一小节。
+若__rmqueue_smallest()函数中执行到了第5步，也就是页面分配失败了，则回溯到__alloc_pages_nodemask()函数中，调用__alloc_pages_slowpath()慢分配函数进行页框的分配，如果失败，会唤醒kswapd内核线程，进行页框的回收、页框的异步压缩和同步压缩，以及OOM等操作来使得系统获得更多的空闲页框。由__alloc_pages_nodemask()函数代码中的unlikely()宏可知，这一步一般是不会执行到的，本书就不再讲解，感兴趣的读者可以自行研究。分配完内存，接下来肯定就得进行内存的回收，那么伙伴系统中是如何进行内存的回收呢？请看下一小节。
 
 ### 4.4.4 物理页面的回收 
 
@@ -281,27 +281,43 @@ for (current_order = order; current_order < MAX_ORDER; ++current_order) {
 
 函数free_pages用于页块的回收，其定义如下：
 ```c
-void free_pages(unsigned long addr, unsigned long order)
+void free_pages(unsigned long addr, unsigned int order)
+{
+	if (addr != 0) {
+		VM_BUG_ON(!virt_addr_valid((void *)addr));
+		__free_pages(virt_to_page((void *)addr), order);
+	}
+}
+void __free_pages(struct page *page, unsigned int order)
+{
+	if (put_page_testzero(page)) {
+		if (order == 0)
+			free_hot_cold_page(page, 0);
+		else
+			__free_pages_ok(page, order);
+	}
+}
 ```
 其中addr是要回收的页块的首地址；
 
 order指出要回收的页块的大小为2的order次幂个物理页。
 
 该函数所做的工作如下：
+1. 将addr转换为页描述符page；
 
-1. 检查该页是否还有其他进程使用，将页块的页描述符page结构中的_count字段值减1，表示引用该页的进程数减了1个，如果结果值不是0，说明还有别的进程在使用该页块，因此不能回收它，简单地返回；
+2. 检查该页是否还有其他进程使用，将页块的页描述符page结构中的_count字段值减1，表示引用该页的进程数减了1个，如果结果值不是0，说明还有别的进程在使用该页块，因此不能回收它，简单地返回；
 
-2. 如果是释放单页框，则将其优先释放到per-CPU的单页框告诉缓存链表中，否则放回伙伴系统中；
+3. 如果是释放单页框，则将其优先释放到per-CPU的单页框告诉缓存链表中，否则放回伙伴系统中；
 
-3. 检查页框的状态，判断页框是否允许释放，避免错误释放页框，如检查页描述符的_mapcount字段是否为-1，也就是该页框是否被进程映射；
+4. 检查页框的状态，判断页框是否允许释放，避免错误释放页框，如检查页描述符的_mapcount字段是否为-1，也就是该页框是否被进程映射；
 
-4. 获取页框所在链表的迁移类型migratetype；
+5. 获取页框所在链表的迁移类型migratetype；
 
-5. 检查要回收的页框所在链表的前后是否有空闲页框(也就是寻找当前要释放的页框是否有伙伴)，有其他空闲页框则合并，并且order++，继续检查当前order阶数所在的链表，直到不能合并或者order不小于MAX_ORDER-1为止；
+6. 检查要回收的页框所在链表的前后是否有空闲页框(也就是寻找当前要释放的页框是否有伙伴)，有其他空闲页框则合并，并且order++，继续检查当前order阶数所在的链表，直到不能合并或者order不小于MAX_ORDER-1为止；
 
-6. 将页块加入到数组free_area的相应链表中；
+7. 将页块加入到数组free_area的相应链表中；
 
-7. 增加当前链表中空闲页块的个数nr_free。
+8. 增加当前链表中空闲页块的个数nr_free。
 
 例如，在图4.10，如果第1页释放，因为此时它的伙伴（第0页）已经空闲，因此可以将他们合并成一个大小为2页的块（0、1），并将其加入到free_area[1]的链表中；因为新块（0、1）的伙伴（2、3）不在free_area[1]链表中，所以不需要进行进一步的合并。其结果是，第0块被从free_area[0]链表中取下，合并成大小为2页的新块（0、1），新块被加到了free_area[1]链表中。当然，相应的位图也做了修改以反映这种变化。
 
