@@ -650,81 +650,50 @@ vfree（buf）；
 
 ```c
 #include<linux/module.h>
-
 #include<linux/init.h>
-
 #include<linux/slab.h>
-
 #include<linux/mm.h>
-
 #include<linux/vmalloc.h>
 
 unsigned long pagemem;
-
 unsigned char *kmallocmem;
-
 unsigned char *vmallocmem;
-
 MODULE_LICENSE("GPL");
 
 static int __init init_mmshow(void)
-
 {
-
-		pagemem = __get_free_page(GFP_KERNEL);
-
+		pagemem = __get_free_pages(GFP_KERNEL);
 		if(!pagemem)
-
 				goto fail3;
 
 		printk(KERN_INFO "pagemem=0x%lx\n", pagemem);
-
 		kmallocmem = kmalloc(100, GFP_KERNEL);
-
 		if(!kmallocmem)
-
 				goto fail2;
 
 		printk(KERN_INFO "kmallocmem=0x%p\n", kmallocmem);
-
 		vmallocmem = vmalloc(1000000);
-
 		if(!vmallocmem)
-
 			goto fail1;
 
 		printk(KERN_INFO "vmallocmem=0x%p\n", vmallocmem);
-
 		return 0;
-
 fail1:
-
 		kfree(kmallocmem);
-
 fail2:
-
 		free_page(pagemem);
-
 fail3:
-
 		return -1;
-
 }
 
 static void __exit cleanup_mmshow(void)
-
 {
-
 		vfree(vmallocmem);
-
 		kfree(kmallocmem);
-
 		free_page(pagemem);
-
 }
 
 module_init(init_mmshow);
-
 module_exit(cleanup_mmshow);
 ```
 
@@ -741,80 +710,48 @@ Entry）。也就是说，一个线性地址中除去偏移量，分别存放了
 ```c
 static struct page *my_follow_page(struct vm_area_struct *vma, unsigned
 long addr)
-
 {
-
 		pud_t *pud;
-
 		pmd_t *pmd;
-
 		pte_t *pte;
-
 		spinlock_t *ptl;
-
 		unsigned long full_addr;
-
 		struct page *page = NULL;
-
 		struct mm_struct *mm = vma->vm_mm;
-
 		pgd = pgd_offset(mm, addr); /*获得addr对应的pgd项的地址*/
-
 		if (pgd_none(*pgd) || unlikely(pgd_bad(*pgd))) { /*pgd为空或无效*/
-
 				goto out;
-
 		}
-
 		pud = pud_offset(pgd, addr);
-
 		if (pud_none(*pud) || unlikely(pud_bad(*pud)))
-
-				goto out;
+			goto out;
 
 		pmd = pmd_offset(pud, addr);
-
 		if (pmd_none(*pmd) || unlikely(pmd_bad(*pmd))) {
-
-				goto out;
-
+			goto out;
 		}
 
 		pte = pte_offset_map_lock(mm, pmd, addr, &ptl);
-
 		if (!pte)
-
-				goto out;
+			goto out;
 
 		if (!pte_present(*pte))
-
-		goto unlock;
+			goto unlock;
 
 		page = pfn_to_page(pte_pfn(*pte)); /*从pte_pfn(*pte)取得物理页号，从而获得页的起始地址*/
-
 		if (!page)
-
-				goto unlock;
+			goto unlock;
 
 		full_addr=(*pte).pte_low & PAGE_MASK; /*获取低12位偏移量*/
-
 		full_addr+=addr & (~PAGE_MASK);
-
 		printk("full_addr=%lx..n",full_addr); /*打印物理地址*/
-
 		printk("pte=%lx.....n",pte_pfn(*pte)); /*打印物理页面号*/
-
 		printk("page=%p..\n",page); /*打印页的起始地址*/
-
 		get_page(page); /* page->_count原子的加1*/
 
 unlock:
-
 		pte_unmap_unlock(pte, ptl);
-
 out:
-
 		return page;
-
 }
 ```
