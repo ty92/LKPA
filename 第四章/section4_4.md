@@ -558,9 +558,9 @@ kfree(buf)
 
 ### 4.4.6 内核空间非连续内存区的分配
 
-我们说，任何时候，CPU访问的都是虚拟内存，那么，在你编写驱动程序，或者编写模块时，Linux给你分配什么样的内存？它处于4G空间的什么位置？这就是我们要讨论的非连续内存。
+我们说，任何时候，CPU访问的都是虚拟内存，那么，在你编写驱动程序，或者编写模块时，Linux给你分配什么样的内存？它处于4G(32-bit)/256T(64-bit)空间的什么位置？这就是我们要讨论的非连续内存，即就是将物理地址不连续的页框映射到线性地址连续的线性地址空间。
 
-首先，非连续内存处于3G到4G之间，也就是处于内核空间，如图4.13所示：
+首先，对于32-bit结构来说非连续内存处于3G到4G之间，也就是处于内核空间，如图4.13所示：
 
 <div style="text-align: center">
 <img src="4_13.png"/>
@@ -572,37 +572,52 @@ kfree(buf)
 
 在物理地址的末尾与第一个内存区之间插入了一个8MB的区间，这是一个安全区，目的是为了“捕获”对非连续区的非法访问。出于同样的理由，在其他非连续的内存区之间也插入了4K大小的安全区。每个非连续内存区的大小都是4096的倍数。
 
-描述非连续区的数据结构为struct vm_struct：
+而对于64-bit架构来说，非连续内存处于128T的内核空间中，整体结构相比于32bit架构没有太大的变化，只是区间更加的大了，
+在直接映射内存的64TB空间后边是一个1TB的空洞，接着就是32TB的vmalloc非连续内存区空间，以VMALLOC_START开始，VMALLOC_END结束，内核定义如下所示：
+```c
+#define VMALLOC_START    _AC(0xffffc90000000000, UL)
+#define VMALLOC_END      _AC(0xffffe8ffffffffff, UL)
+```
+描述非连续区的数据结构主要有两个：struct vm_struct结构体和struct vmap_area结构体，所有的vm_struct都会链入vmlist链表来管理，使用vmap_area结构体主要是为了引入红黑树来组织以提高性能，和vm_struct是有对应关系的：
 
 ```c
 struct vm_struct {
-
-		unsigned long flags;
-
-		void * addr;
-
-		unsigned long size;
-
-		struct vm_struct * next;
-
+	struct vm_struct	*next;
+	void			*addr;
+	unsigned long		size;
+	unsigned long		flags;
+	struct page		**pages;
+	unsigned int		nr_pages;
+	phys_addr_t		phys_addr;
+	const void		*caller;
 };
 ```
+其中，next指向下一个vm_struct，addr指向第一个内存单元的虚拟地址，size对应分配内存的大小，flag为相应的标志，pages是页的地址，nr_pages是页的数量，phys_addr一般为0(ioremap时会用到)，caller是调用者的地址。
+```c
+struct vmap_area {
+	unsigned long va_start;
+	unsigned long va_end;
+	unsigned long flags;
+	struct rb_node rb_node;         /* address sorted rbtree */
+	struct list_head list;          /* address sorted list */
+	struct list_head purge_list;    /* "lazy purge" list */
+	struct vm_struct *vm;
+	struct rcu_head rcu_head;
+};
+```
+va_start、va_end分别表示vmalloc区的起始终止地址，flags为类型标识，rb_node就是按红黑树相关的成员对象，vm表示对应的vm_struct对象。
 
-Addr域是每个内存区的起始地址；size是内存区的大小加4096(安全区的大小)
-，非连续区组成一个单链表。
-
-函数get_vm_area()创建一个新的非连续区结构，其中调用了kmalloc()和kfree()函数分别为vm_struct结构分配和释放所需的内存。
+函数__get_vm_area_node()创建一个新的非连续区结构，其中调用了kzalloc_node()分配vm_struct结构并初始化为0，alloc_vmap_area()函数分配vmap_area。
 
 vmalloc()函数给内核分配一个非连续的内存区，其原型为：
 ```c
 void * vmalloc (unsigned long size)
 ```
-函数首先把size参数取整为页面大小（4096）的一个倍数，也就是按页的大小进行对齐，然后进行有效性检查，如果有大小合适的可用内存，就调用get_vm_area（）获得一个内存区的结构。最后调用函数vmalloc_area_pages()真正进行非连续内存区的分配，该函数实际上建立起了非连续内存区到物理页面的映射。
+函数首先把size参数取整为页面大小（4096）的一个倍数，也就是按页的大小进行对齐，然后进行有效性检查，如果有大小合适的可用内存，就调用__get_vm_area_node（）获得一个内存区的结构。最后调用函数__vmalloc_area_node()真正进行非连续内存区物理页框的分配，并将分散的物理页框分别映射到连续的vmalloc区。
 
 vmalloc()与 kmalloc()都是在内核代码中用来分配内存的函数，但二者有何区别？
 
-从前面的介绍已经看出，这两个函数所分配的内存都处于内核空间，即从3GB～4GB；但位置不同，kmalloc()分配的内存处于3GB～high_memory之间，这
-一段内核空间与物理内存的映射一一对应，而vmalloc()分配的内存在VMALLOC_START～4GB之间，这一段非连续内存区映射到物理内存也可能是非连续的。
+从前面的介绍已经看出，这两个函数所分配的内存都处于内核空间；但位置不同，kmalloc()分配的内存处于直接映射内存区间之间，这一段内核空间与物理内存的映射一一对应，而vmalloc()分配的内存在VMALLOC_START～VMALLOC_END之间，这一段非连续内存区映射到物理内存也可能是非连续的。
 
 vmalloc()工作方式与kmalloc()类似，
 其主要差别在于前者分配的物理地址无需连续，而后者确保页在物理上是连续的（虚地址自然也是连续的）。
@@ -629,7 +644,7 @@ vfree（buf）；
 
 ### 4.4.7 物理内存分配举例
 
-通过以上介绍我们了解到，调用伙伴算法的_get_free_pages()函数能分配一个或多个连续的物理页面，调用kmalloc()为不足一个页面的需求分配内存，而调用vmalloc()获得大块的内存区，以下代码说明了如何调用这几个函数，它们所返回的地址位于何处。
+通过以上介绍我们了解到，调用伙伴算法的__get_free_pages()函数能分配一个或多个连续的物理页面，调用kmalloc()为不足一个页面的需求分配内存，而调用vmalloc()获得大块的内存区，以下代码说明了如何调用这几个函数，它们所返回的地址位于何处。
 
 例 4-5 内存分配函数的调用
 
