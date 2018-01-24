@@ -662,7 +662,7 @@ MODULE_LICENSE("GPL");
 
 static int __init init_mmshow(void)
 {
-		pagemem = __get_free_pages(GFP_KERNEL);
+		pagemem = __get_free_pages(GFP_KERNEL, 0);
 		if(!pagemem)
 				goto fail3;
 
