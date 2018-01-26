@@ -662,7 +662,7 @@ MODULE_LICENSE("GPL");
 
 static int __init init_mmshow(void)
 {
-		pagemem = __get_free_pages(GFP_KERNEL, 0);
+		pagemem = __get_free_pages(GFP_KERNEL, 0);  //申请一个页框
 		if(!pagemem)
 				goto fail3;
 
@@ -705,53 +705,47 @@ module_exit(cleanup_mmshow);
 Directory），PT（Page Table）以及偏移量offset，其中的表项叫页表项PTE（Page Tabe
 Entry）。也就是说，一个线性地址中除去偏移量，分别存放了四级目录表项的索引值。具体的线性地址翻译成物理地址的过程是：首先从进程地址描述符中（mm_struct）中读取pgd字段的内容，它就是页全局目录的起始地址；然后页全局目录起始地址加上页全局目录索引获得页上级目录的起始地址；页上级目录的起始地址加上页上级目录的索引获得页中间目录的起始地址；页中间目录的起始地址加上页中间目录的索引获得页表起始地址；页表起始地址加上索引，可以得到完整的页表项内容；从页表项中取出物理页的基址，加上偏移量可以得到最终的物理地址。
 
-接下来的程序是通过给定一个有效的虚地址，首先找到该虚地址所属的内存区，然后通过my_follow_page()函数得到该虚地址对应的物理页描述符page。最后通过page_address()函数找到该物理页描述符所代表的物理页起始地址，接着提取出物理页的偏移量，最终合成完整的物理地址。
+接下来的程序是通过给定一个有效的虚地址，首先找到该虚地址所属的内存区，然后通过my_follow_page()函数得到该虚地址对应的物理地址。
 
 ```c
-static struct page *my_follow_page(struct vm_area_struct *vma, unsigned
-long addr)
+static unsigned long vaddr2paddr(struct vm_area_struct *vma, unsigned long vaddr)
 {
-		pud_t *pud;
-		pmd_t *pmd;
-		pte_t *pte;
-		spinlock_t *ptl;
-		unsigned long full_addr;
-		struct page *page = NULL;
-		struct mm_struct *mm = vma->vm_mm;
-		pgd = pgd_offset(mm, addr); /*获得addr对应的pgd项的地址*/
-		if (pgd_none(*pgd) || unlikely(pgd_bad(*pgd))) { /*pgd为空或无效*/
-				goto out;
-		}
-		pud = pud_offset(pgd, addr);
-		if (pud_none(*pud) || unlikely(pud_bad(*pud)))
-			goto out;
+	pgd_t *pgd;
+	pud_t *pud;
+	pmd_t *pmd;
+	pte_t *pte;
 
-		pmd = pmd_offset(pud, addr);
-		if (pmd_none(*pmd) || unlikely(pmd_bad(*pmd))) {
-			goto out;
-		}
+	unsigned long paddr = 0;
+	unsigned long page_addr = 0;
+	unsigned long page_offset = 0;
 
-		pte = pte_offset_map_lock(mm, pmd, addr, &ptl);
-		if (!pte)
-			goto out;
+	struct mm_struct *mm = vma->vm_mm;
+	pgd = pgd_offset(mm, vaddr);    /* 获得vaddr对应的pgd项的地址 */
+	if (pgd_none(*pgd) || unlikely(pgd_bad(*pgd))) { /* pgd为空或无效 */
+		goto out;
+	}
 
-		if (!pte_present(*pte))
-			goto unlock;
+	pud = pud_offset(pgd, vaddr);
+	if (pud_none(*pud) || unlikely(pud_bad(*pud))) {
+		goto out;
+	}
 
-		page = pfn_to_page(pte_pfn(*pte)); /*从pte_pfn(*pte)取得物理页号，从而获得页的起始地址*/
-		if (!page)
-			goto unlock;
+	pmd = pmd_offset(pud, vaddr);
+	if (pmd_none(*pmd) || unlikely(pmd_bad(*pmd))) {
+    		goto out;
+	}
 
-		full_addr=(*pte).pte_low & PAGE_MASK; /*获取低12位偏移量*/
-		full_addr+=addr & (~PAGE_MASK);
-		printk("full_addr=%lx..n",full_addr); /*打印物理地址*/
-		printk("pte=%lx.....n",pte_pfn(*pte)); /*打印物理页面号*/
-		printk("page=%p..\n",page); /*打印页的起始地址*/
-		get_page(page); /* page->_count原子的加1*/
+	pte = pte_offset_kernel(pmd, vaddr);  /* 计算页表项的线性地址pte */
+	if (pte_none(*pte)) {
+		printk("not mapped in pte\n");
+		goto out;
+  	}
 
-unlock:
-		pte_unmap_unlock(pte, ptl);
+  	//页框物理地址基址 | 偏移量
+  	page_addr = pte_val(*pte) & PAGE_MASK;  /* pte_val(*pte)取出页表项，然后与PAGE_MASK相与得到要访问页的物理地址 */
+  	page_offset = vaddr & ~PAGE_MASK;      /* 指定虚拟地址vaddr 与 ~PAGE_MASK相与，得到线性地址的offset */
+  	paddr = page_addr | page_offset;       /* 或运算得到最终的物理地址 */
 out:
-		return page;
+  	return paddr;
 }
 ```
