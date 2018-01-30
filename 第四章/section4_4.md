@@ -424,7 +424,7 @@ kmem_cache            96     96    256   16    1 : tunables    0    0    0 : sla
 ```
 如刚才所说，xfs_dquot、TCP、UDP等都是slab专用缓冲区，后边的如dma-kmalloc-32、kmalloc-32 就是slab通用缓冲区。注意kmalloc-x都对应一个dma-kmalloc-x类型的slab通用缓冲区，这种类型是使用了ZONE_DMA区域的内存，方便用于DMA模式申请内存。
 
-#### 1 Slab专用缓冲区的建立和释放
+#### 2 Slab专用缓冲区的建立和释放
 
 专用缓冲区主要用于频繁使用的数据结构，如task_struct、mm_struct、vm_area_struct、 file、 dentry、
 inode等。缓冲区是用struct kmem_cache结构体类型描述的，通过kmem_cache_create（）来建立，函数原型为：
@@ -475,7 +475,7 @@ slab必须调用__alloc_pages()获取新的页面，flags是传递给该函数�
 
    这样就能把cachep中的对象objp标记为空闲了。
 
-#### 2 Slab分配举例
+#### 3 Slab分配举例
 
 让我们考察一个实际的例子，这个例子用的是task_struct结构（进程控制块），代码取自kernel/fork.c。
 
@@ -548,7 +548,7 @@ if (err)
 
 如果要频繁创建很多相同类型的对象，那么，就应该考虑使用slab缓冲区。确切地说，不要自己去实现空闲链表！
 
-#### 3. 通用缓冲区
+#### 4. 通用缓冲区
 
 在内核中初始化开销不大的数据结构可以合用一个通用的缓冲区。通用缓冲区最小的为32字节，然后依次为64、128、…直至128K（即32个页面），但是，对通用缓冲区的管理又采用的是Slab方式。从通用缓冲区中分配和释放缓冲区的函数为：
 
@@ -580,6 +580,9 @@ if (!buf)
 之后，当我们不再需要这个内存时，别忘了释放它：
 
 kfree(buf)
+
+#### 5 进化版slab分配器——slub
+
 
 ### 4.4.6 内核空间非连续内存区的分配
 
