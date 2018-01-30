@@ -337,6 +337,8 @@ Linux中对Slab分配模式有所改进，它对内存区的处理并不需要�
 
 4.  硬件高速缓存的使用，又为尽量减少对伙伴算法的调用提供了另一个理由，因为对伙伴算法的每次调用都会“弄脏”硬件高速缓存，因此，这就增加了对内存的平均访问次数。
 
+#### 1 slab分配器的结构
+
 Slab分配模式把对象分组放进缓冲区（尽管英文中使用了Cache这个词，但实际上指的是内存中的区域，而不是指硬件高速缓存）。因为缓冲区的组织和管理与硬件高速缓存的命中率密切相关，因此，Slab缓冲区并非由各个对象直接构成，而是由一连串的“大块（Slab）”构成，而每个大块中则包含了若干个同种类型的对象，这些对象或已被分配，或空闲，如图4.12所示。一般而言，对象分两种，一种是大对象，一种是小对象。所谓小对象，是指在一个页面中可以容纳下好几个对象的那种。例如，一个inode结构大约占300多个字节，因此，一个页面中可以容纳8个以上的inode结构，因此，inode结构就为小对象。Linux内核中把小于512字节的对象叫做小对象，大于512字节的对象叫做大对象。
 
 <div style="text-align: center">
@@ -345,7 +347,30 @@ Slab分配模式把对象分组放进缓冲区（尽管英文中使用了Cache�
 
 <center>图4.12 Slab的组成</center>
 
-实际上，缓冲区就是主存中的一片区域，把这片区域划分为多个块，每块就是一个Slab，每个Slab由一个或多个页面组成，每个Slab中存放的就是对象。
+实际上，缓冲区是由多个kmem_cache结构(这个结构中包含了对当前高速缓存各种属性信息的描述)描述的cache组成的，就是主存中的一片区域，把这片区域划分为多个块，每块就是一个Slab，每个Slab由一个或多个页面组成，每个Slab中存放的就是对象。
+
+所有的slab分为三个集合：空闲对象的slab链表slabs_free、非空闲对象的slab链表slabs_full以及部分空闲对象的slab链表slabs_partial，每个slab都有相应的slab描述符，即slab结构，定义如下：
+```c
+struct slab {
+    union {
+        struct {
+            struct list_head list;
+            unsigned long colouroff;
+            void *s_mem;        /* including colour offset */
+            unsigned int inuse;    /* num of objs active in slab 正在使用的对象个数*/
+            kmem_bufctl_t free;
+            unsigned short nodeid;
+        };
+        struct slab_rcu __slab_cover_slab_rcu;
+    };
+};
+```
+slab描述符中的list字段表明当前slab处于三个slab链表中的其中一个，我们将上述slab分配器进行细化就可以得到如图4.13所示的结构。
+<div style="text-align: center">
+<img src="slab.png"/>
+</div>
+
+<center>图4.13 Slab结构图</center>
 
 Linux把缓冲区分为专用和通用，它们分别用于不同的目的，专用slab用于特定的场合(如TCP、UDP等都有自己的专用缓冲区，当其需要小内存时，就会从自己的slab专用缓冲区中分配)，而通用缓冲区就是用于常规小内存的分配(如kmalloc)，我们可以通过/proc/slabinfo文件查看slab的状态，如下所示（部分显示）。
 ```c
@@ -560,13 +585,13 @@ kfree(buf)
 
 我们说，任何时候，CPU访问的都是虚拟内存，那么，在你编写驱动程序，或者编写模块时，Linux给你分配什么样的内存？它处于4G(32-bit)/256T(64-bit)空间的什么位置？这就是我们要讨论的非连续内存，即就是将物理地址不连续的页框映射到线性地址连续的线性地址空间。
 
-首先，对于32-bit结构来说非连续内存处于3G到4G之间，也就是处于内核空间，如图4.13所示：
+首先，对于32-bit结构来说非连续内存处于3G到4G之间，也就是处于内核空间，如图4.14所示：
 
 <div style="text-align: center">
 <img src="4_13.png"/>
 </div>
 
-<center>图4.13 从PAGE_OFFSET开始的内核地址区间</center>
+<center>图4.14 从PAGE_OFFSET开始的内核地址区间</center>
 
 图中，PAGE_OFFSET为3GB，high_memory为保存物理地址最高值的变量，VMALLOC_START为非连续区的的起始地址。
 
