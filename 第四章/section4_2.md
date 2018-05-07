@@ -372,7 +372,7 @@ vm_operations结构中包含的是函数指针；其中，open、close分别用�
 
 #### 3. 相关数据结构之间的关系
 
-进程控制块是内核中的核心数据结构。在进程的 task_struct结构中包含一个mm域，它是指向 mm_struct 结构的指针。而进程的mm_struct结构则包含进程的可执行映像信息以及进程的页目录指针pgd等。该结构还包含有指向vm_area_struct 结构的几个指针，每个 vm_area_struct
+&emsp; &emsp;进程控制块是内核中的核心数据结构。在进程的 task_struct结构中包含一个mm域，它是指向 mm_struct 结构的指针。而进程的mm_struct结构则包含进程的可执行映像信息以及进程的页目录指针pgd等。该结构还包含有指向vm_area_struct 结构的几个指针，每个 vm_area_struct
 代表进程的一个虚拟地址区间。这几个结构之间的关系如图4.7所示：
 
 <div style="text-align: center">
@@ -381,7 +381,7 @@ vm_operations结构中包含的是函数指针；其中，open、close分别用�
 
 <center>图4.7相关数据结构之间的关系示意图</center>
 
-从图中可以看出，系统以用户虚拟内存地址的降序排列vm_area_struct。在进程的运行过程中，Linux要经常为进程分配虚存区，因此，vm_area_struct结构的访问时间就成了性能的关键因素。为此，除链表结构外，Linux还利用红黑树来组织 vm_area_struct。通过这种树结构，Linux可以快速定位某个虚存区。
+&emsp; &emsp;从图中可以看出，系统以用户虚拟内存地址的降序排列vm_area_struct。在进程的运行过程中，Linux要经常为进程分配虚存区，因此，vm_area_struct结构的访问时间就成了性能的关键因素。为此，除链表结构外，Linux还利用红黑树来组织 vm_area_struct。通过这种树结构，Linux可以快速定位某个虚存区。
 
 ### 4.2.2 进程用户空间的创建
 
