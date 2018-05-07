@@ -1,16 +1,16 @@
 ## 4.6 内存管理实例
 
-我们希望能通过访问用户空间的内存达到读取内核数据的目的，这样便可进行内核空间到用户空间的大规模信息传送，从而应用于高速数据采集等性能要求高的场合。
+&emsp; &emsp;我们希望能通过访问用户空间的内存达到读取内核数据的目的，这样便可进行内核空间到用户空间的大规模信息传送，从而应用于高速数据采集等性能要求高的场合。
 
-因为通过外设采集的数据首先会由驱动程序放入内核，然后才传送到用户空间由应用程序做进一步的处理。而我们知道由于内核内存是受保护的，因此，要想将其数据拷贝到用户空间，通常的方法是利用系统调用，但是系统调用的缺点是速度慢，这会成为数据高速处理的瓶颈。因此我们希望可以从用户空间直接读取内核数据，从而省去了数据在两个空间拷贝的过程。
+&emsp; &emsp;因为通过外设采集的数据首先会由驱动程序放入内核，然后才传送到用户空间由应用程序做进一步的处理。而我们知道由于内核内存是受保护的，因此，要想将其数据拷贝到用户空间，通常的方法是利用系统调用，但是系统调用的缺点是速度慢，这会成为数据高速处理的瓶颈。因此我们希望可以从用户空间直接读取内核数据，从而省去了数据在两个空间拷贝的过程。
 
-具体地讲，我们要利用内存映射功能，将内核中的一部分虚拟内存映射到用户空间，使得访问用户空间地址等同于访问被映射的内核空间地址，从而不再需要数据拷贝操作了。
+&emsp; &emsp;具体地讲，我们要利用内存映射功能，将内核中的一部分虚拟内存映射到用户空间，使得访问用户空间地址等同于访问被映射的内核空间地址，从而不再需要数据拷贝操作了。
 
 #### 4.6.1 相关背景知识
 
-我们知道，在内核空间中调用kmalloc()分配连续物理空间，而调用vmalloc()分配非物理连续空间。在这里，我们把kmalloc()所分配内核空间中称为**内核逻辑空间（Kernel Logic Space）**。它所分配的内核空间虚地址和物理地址都是连续的，所以很容易获得其对应的实际物理地址，即“内核虚地址－PAGE_OFFSET＝实际的物理地址”。另外，由于系统在初始化时就建立了内核页表“swapper_pg_dir”，而kmalloc()分配过程所使用的就是该页表，因此也省去了建立和更新页表的工作。
+&emsp; &emsp;我们知道，在内核空间中调用kmalloc()分配连续物理空间，而调用vmalloc()分配非物理连续空间。在这里，我们把kmalloc()所分配内核空间中称为**内核逻辑空间（Kernel Logic Space）**。它所分配的内核空间虚地址和物理地址都是连续的，所以很容易获得其对应的实际物理地址，即“内核虚地址－PAGE_OFFSET＝实际的物理地址”。另外，由于系统在初始化时就建立了内核页表“swapper_pg_dir”，而kmalloc()分配过程所使用的就是该页表，因此也省去了建立和更新页表的工作。
 
-我们把vmalloc()分配的内核空间中称为**内核虚拟空间（Kernel Virtual Space,简称KVS）**，它的映射相来说较复杂，这是因为其分配的内核空间位于非连续区，如图4.13所示，所采用的数据结构是vm_struct。vamlloc()分配的内核空间地址所对应的物理地址并非可通过简单线性运算获得，从这个意义上说，它的物理地址在分配前是不确定的，虽然vmalloc()分配空间与kmalloc()一样都是由内核页表来映射的，但vmalloc()在分配过程中须更新内核页表[^2]。
+&emsp; &emsp;我们把vmalloc()分配的内核空间中称为**内核虚拟空间（Kernel Virtual Space,简称KVS）**，它的映射相来说较复杂，这是因为其分配的内核空间位于非连续区，如图4.13所示，所采用的数据结构是vm_struct。vamlloc()分配的内核空间地址所对应的物理地址并非可通过简单线性运算获得，从这个意义上说，它的物理地址在分配前是不确定的，虽然vmalloc()分配空间与kmalloc()一样都是由内核页表来映射的，但vmalloc()在分配过程中须更新内核页表[^2]。
 
 [^2]: 内核页表把内核空间映射到物理内存，其中vmalloc和kmalloc分配的物理内存都由内核页表描述；同理用户页表把用户空间映射到物理内存。
 
@@ -22,13 +22,13 @@
 
 **2) 建立新的用户页表项**。
 
-因为用户空间和内核空间映射到了同一物理地址，这样以物理地址为中介，用户进程寻址时，通过自己的用户页表就能找到对应的物理内存，因此访问用户空间就等于访问了内核空间。
+&emsp; &emsp;因为用户空间和内核空间映射到了同一物理地址，这样以物理地址为中介，用户进程寻址时，通过自己的用户页表就能找到对应的物理内存，因此访问用户空间就等于访问了内核空间。
 
 ##### 1. 实例蓝图
 
-如前所述，我们把内核空间分为**内核逻辑空间**和**内核虚拟空间**，我们的目标是把vmalloc()分配的**内核虚拟空间**映射到用户空间。（这里没有选择kmalloc()，是因为它的映射关系过于简单，而作为教学，我们主要目的就是找到内核地址对应的物理地址，因此我们选择更为复杂的内核虚拟空间，它更能体现映射场景）。
+&emsp; &emsp;如前所述，我们把内核空间分为**内核逻辑空间**和**内核虚拟空间**，我们的目标是把vmalloc()分配的**内核虚拟空间**映射到用户空间。（这里没有选择kmalloc()，是因为它的映射关系过于简单，而作为教学，我们主要目的就是找到内核地址对应的物理地址，因此我们选择更为复杂的内核虚拟空间，它更能体现映射场景）。
 
-我们知道，用户进程操作的是虚存区vm_area_struct，我们此刻需要利用用户页表将用户虚存区映射到物理内存，如图4.14所示。这里主要工作便是建立用户页表项，从而完成映射工作。这个操作由用户虚拟区操作表中的vma->nopage[^3]方法完成，当发生“缺页”时，该方法会帮助我们动态构造被映射物理内存的用户页表项。（注意这里并非一次就全部映射我们所需要的空间，而是在缺页时动态地一次一次地在现场完成映射）。
+&emsp; &emsp;我们知道，用户进程操作的是虚存区vm_area_struct，我们此刻需要利用用户页表将用户虚存区映射到物理内存，如图4.14所示。这里主要工作便是建立用户页表项，从而完成映射工作。这个操作由用户虚拟区操作表中的vma->nopage[^3]方法完成，当发生“缺页”时，该方法会帮助我们动态构造被映射物理内存的用户页表项。（注意这里并非一次就全部映射我们所需要的空间，而是在缺页时动态地一次一次地在现场完成映射）。
 
 >1. 内核页表把内核空间映射到物理内存，其中vmalloc和kmalloc分配的物理内存都由内核页表描述；同理用户页表把用户空间映射到物理内存。
 
@@ -41,7 +41,7 @@
 <center>(虚线箭头表示需要建立的新映射关系。 实线箭头表示已有的映射关系)</center>
 <center>图4.14 用户虚存区映射到内核虚拟空间对应的物理内存</center>
 
-为了把用户空间的虚存区映射到内核虚拟空间对应的物理内存，我们首先寻找内核虚拟空间中的地址对应的内核逻辑地址。读者会问，为什么不直接映射到物理地址？
+&emsp; &emsp;为了把用户空间的虚存区映射到内核虚拟空间对应的物理内存，我们首先寻找内核虚拟空间中的地址对应的内核逻辑地址。读者会问，为什么不直接映射到物理地址？
 这主要是想利用内核提供的一些现有的例程，例如，把内核虚地址转换成物理地址的宏virt_to_page，这些例程都是针对内核逻辑地址而言的，所以，只要求出内核逻辑地址，只需减去一个偏移量PAGE_OFFSET就得到相应的物理地址。
 
 我们需要实现nopage方法，动态建立对应页表，而在该方法中核心任务是找到内核逻辑地址。这就需要我们做以下工作：
@@ -56,12 +56,12 @@
 
 #### 2. 基本函数
 
-我们实例利用一个虚拟字符驱动程序，将vmalloc()分配的一定长的内核虚拟地址映射到设备文件[^3]，以便可以通过访问文件内容来达到访问内存的目的。这样除了提高内存访问速度外，还可以让用户利用文件系统的编程接口访问内存，降低了开发难度。
+&emsp; &emsp;我们实例利用一个虚拟字符驱动程序，将vmalloc()分配的一定长的内核虚拟地址映射到设备文件[^3]，以便可以通过访问文件内容来达到访问内存的目的。这样除了提高内存访问速度外，还可以让用户利用文件系统的编程接口访问内存，降低了开发难度。
  
 
-Map_driver.c就是我们的虚拟字符驱动程序。为了要完成内存映射，除了常规的open()/release()操作外，必须自己实现mmap()操作，该函数将给定的文件映射到指定的地址空间上，也就是说它将负责把vmalloc()分配的内核地址映射到我们的设备文件上。
+&emsp; &emsp;Map_driver.c就是我们的虚拟字符驱动程序。为了要完成内存映射，除了常规的open()/release()操作外，必须自己实现mmap()操作，该函数将给定的文件映射到指定的地址空间上，也就是说它将负责把vmalloc()分配的内核地址映射到我们的设备文件上。
 
-文件操作表中的mmap()是在用户进程调用mmap()系统调用时被执行的，而且在调用前内核已经给用户进程找到并分配了合适的虚存区vm_area_struct，这个区将代表文件内容，所以接着要做的是如何把虚存区和物理内存挂接到一起了，即构造页表。由于我门前面所说的原因，系统中页表需要动态分配，因此不可使用remap_page_range函数一次分配完成，而必须使用虚存区操作中的nopage方法，在现场一页一页地构造页表。
+&emsp; &emsp;文件操作表中的mmap()是在用户进程调用mmap()系统调用时被执行的，而且在调用前内核已经给用户进程找到并分配了合适的虚存区vm_area_struct，这个区将代表文件内容，所以接着要做的是如何把虚存区和物理内存挂接到一起了，即构造页表。由于我门前面所说的原因，系统中页表需要动态分配，因此不可使用remap_page_range函数一次分配完成，而必须使用虚存区操作中的nopage方法，在现场一页一页地构造页表。
 
 mmap()方法的主要操作是“为它得到的虚存区绑定对应的操作表vm_operations”。于是构造页表的主要操作就由虚存区操作表的nopage方法来完成。
 
@@ -98,51 +98,32 @@ nopage方法主要操作是“寻找到内核虚拟空间中的地址对应的�
 
 ```c
 #include<stdio.h>
-
 #include<unistd.h>
-
 #include<sys/mman.h>
-
 #include<sys/types.h>
-
 #include<fcntl.h>
-
 #include<stdlib.h>
-
 #define LEN (10*4096)
 
 int main(void)
-
 {
-
 		int fd;
-
 		char *vadr;
-
+		
 		if ((fd = open("/dev/mapdrv0", O_RDWR)) < 0) {
-
 				perror("open");
-
 				exit(-1);
-
 		}
 
 		vadr = mmap(0, LEN, PROT_READ, MAP_PRIVATE | MAP_NORESERVE, fd, 0);
-
 		if (vadr == MAP_FAILED) {
-
 				perror("mmap");
-
 				exit(-1);
-
 		}
 
 		printf("%s\n", vadr);
-
 		close(fd);
-
 		exit(0);
-
 }
 ```
 
@@ -159,11 +140,8 @@ int main(void)
 （假设你得到的数是251）
 ```c
 #mknod /dev/mapdrv0 c 251 0
-
 #gcc -Wall -o maptest maptest.c
-
 # ./maptest
-
 hello world from kernel space !
 ```
 把所有251替换成你通过grep搜索到的那个主设备号即可。
@@ -172,82 +150,47 @@ hello world from kernel space !
 
 ```c
 --------------map_driver.h--------------------
-
 #include<asm/atomic.h>
-
 #include<asm/semaphore.h>
-
 #include<linux/cdev.h>
-
 struct mapdrv{
-
 		struct cdev mapdev;
-
 		atomic_t usage;
-
 };
 
 ---------------map_driver.c-------------------
-
 #include<linux/kernel.h>
-
 #include<linux/module.h>
-
 #include<linux/fs.h>
-
 #include<linux/string.h>
-
 #include<linux/errno.h>
-
 #include<linux/mm.h>
-
 #include<linux/vmalloc.h>
-
 #include<linux/slab.h>
-
 #include<asm/io.h>
-
 #include<linux/mman.h>
 
 #include "map_driver.h"
-
 #define MAPLEN (PAGE_SIZE*10)
 
 int mapdrv_open(struct inode *inode, struct file *file); /* 打开设备 */
-
 int mapdrv_release(struct inode *inode, struct file *file); /*关闭设备 */
-
-int mapdrv_mmap(struct file *file, struct vm_area_struct *vma);
-/*设备的mmap函数 */
-
+int mapdrv_mmap(struct file *file, struct vm_area_struct *vma); /*设备的mmap函数 */
 void map_vopen(struct vm_area_struct *vma); /* 打开虚存区 */
-
 void map_vclose(struct vm_area_struct *vma); /* 关闭虚存区 */
-
-struct page *map_nopage(struct vm_area_struct *vma, unsigned long address,
-
-int *type); /* 虚存区的缺页处理函数 */
+struct page *map_nopage(struct vm_area_struct *vma, unsigned long address, int *type); /* 虚存区的缺页处理函数 */
 
 static struct file_operations mapdrv_fops = {
-
 		.owner = THIS_MODULE,
-
 		.mmap = mapdrv_mmap,
-
 		.open = mapdrv_open,
-
 		.release = mapdrv_release,
-
 };
 
 static struct vm_operations_struct map_vm_ops = {
-
 		.open = map_vopen,
-
 		.close = map_vclose,
-
 		.nopage = map_nopage,
-
 };
 
 static int *vmalloc_area = NULL;
@@ -545,26 +488,16 @@ int *type)
 		offset = address - vma->vm_start + (vma->vm_pgoff << PAGE_SHIFT);
 
 /* 把 vmalloc地址转换成 kmalloc地址*/
-
 		virt_addr =
-
 (unsigned long)vaddr_to_kaddr(&vmalloc_area[offset / sizeof(int)]);
-
 		if (virt_addr == 0UL) {
-
 				return ((struct page *)0UL);
-
 		}
-
 		get_page(virt_to_page(virt_addr)); /* 增加页的引用计数*/
-
 		printk("map_drv: page fault for offset 0x%lx (kseg x%lx)n", offset,virt_addr);
-
 		return (virt_to_page(virt_addr));
-
 }
 
 module_init(mapdrv_init);
-
 module_exit(mapdrv_exit);
 ```
