@@ -67,7 +67,7 @@ struct page {
 #if USE_SPLIT_PTLOCKS
 		spinlock_t ptl;
 #endif
-		struct kmem_cache *slab_cache;
+		struct kmem_cache *slab_cache;  //slab缓存链表
 		struct page *first_page;	
 	};
 
@@ -323,7 +323,14 @@ order指出要回收的页块的大小为2的order次幂个物理页。
 ### 4.4.5 小内存分配机制
 &emsp; &emsp;采用伙伴算法分配内存时，每次至少分配一个页面。但当请求分配的内存大小为几十个字节或几百个字节时应该如何处理？如何在一个页面中分配小的内存区，小内存区的分配所产生的内碎片又如何解决？
 
-&emsp; &emsp;目前，Linux内核中存在三种小内存分配方式：Slab/Slob/Slub，Slab是出现最早的一种小内存分配方式，Slob是一种主要用于嵌入式系统的精简的小内存分配算法，适用于内存非常有限的系统，Slub分配器可以认为是对Slab分配器的重设计，代码更少，能够提供更好的性能和更好的系统可伸缩性，并且同时保持Slab分配器接口。下文将主要对Slab进行简要的介绍。
+&emsp; &emsp;目前，Linux内核中存在三种小内存分配方式：Slab/Slob/Slub，Slab是出现最早的一种小内存分配方式，Slob是一种主要用于嵌入式系统的精简的小内存分配算法，适用于内存非常有限的系统，Slub分配器可以认为是对Slab分配器的重设计，代码更少，能够提供更好的性能和更好的系统可伸缩性，并且同时保持Slab分配器接口。小内存分配器、物理页框及伙伴系统之间的有如图4.11-2所示的层次关系。
+<div style="text-align: center">
+<img src="4_11-2.png"/>
+</div>
+
+<center>图4.11-2 小内存分配器层次结构</center>
+
+下文将主要对Slab进行简要的介绍。
 
 &emsp; &emsp;从Linux2.2开始，内存管理的开发者采用了一种叫做slab的分配模式，该模式早在1994年就被开发出来，用于Sun Microsystem Solaris 2.4操作系统中。Slab的提出主要是基于以下考虑：
 
@@ -347,30 +354,27 @@ Linux中对Slab分配模式有所改进，它对内存区的处理并不需要�
 
 <center>图4.12 Slab的组成</center>
 
-&emsp; &emsp;实际上，缓冲区是由多个kmem_cache结构(这个结构中包含了对当前高速缓存各种属性信息的描述)描述的cache组成的，就是主存中的一片区域，把这片区域划分为多个块，每块就是一个Slab，每个Slab由一个或多个页面组成，每个Slab中存放的就是对象。
+&emsp; &emsp;实际上，缓冲区是由多个kmem_cache结构描述的cache组成的，就是主存中的一片区域，把这片区域划分为多个块，每块就是一个Slab，每个Slab由一个或多个页面组成，每个Slab中存放的就是对象。kmem_cache可以称为slab缓存，该结构中包含了对当前缓存区各种属性信息的描述，每个slab缓存都有特定的名称，如下文中的kmalloc-8、kmalloc-16等。该结构体中的部分字段如下所示，并有相关解释。
 
-&emsp; &emsp;所有的slab分为三个集合：空闲对象的slab链表slabs_free、非空闲对象的slab链表slabs_full以及部分空闲对象的slab链表slabs_partial，每个slab都有相应的slab描述符，即slab结构，定义如下：
-```c
-struct slab {
-    union {
-        struct {
-            struct list_head list;
-            unsigned long colouroff;
-            void *s_mem;        /* including colour offset */
-            unsigned int inuse;    /* num of objs active in slab 正在使用的对象个数*/
-            kmem_bufctl_t free;
-            unsigned short nodeid;
-        };
-        struct slab_rcu __slab_cover_slab_rcu;
-    };
-};
 ```
-slab描述符中的list字段表明当前slab处于三个slab链表中的其中一个，我们将上述slab分配器进行细化就可以得到如图4.13所示的结构。
-<div style="text-align: center">
-<img src="slab.png"/>
-</div>
-
-<center>图4.13 Slab结构图</center>
+struct kmem_cache {
+	unsigned int size;	/* slab中分配给对象的大小（包括对齐填充字节，可能大于对象实际大小） */
+	unsigned int flags;		/* 描述slab缓冲区的一组标志 */
+	unsigned int num;		/* 每个slab中的对象个数 */
+	size_t colour;			/* cache colouring range */
+	unsigned int colour_off;	/* colour offset */
+	struct list_head list;		/* 链表结构，将当前的kmem_cache链入全局链表slab_caches */
+	int refcount;			/* 引用计数 */
+	int object_size;		/* 对象实际大小 */
+	……
+	struct kmem_cache_node **node;	/* 用于管理slab链表的表头 */
+	struct array_cache *array[NR_CPUS + MAX_NUMNODES];
+}
+```
+&emsp; &emsp;其中比较重要的是node字段，指向的kmem_cache_node结构体类型中保存着slab的三个链表：
+-  slabs_partial：有部分空闲对象的slab链表，优先从此链表分配对象，当slab中的最后一个空闲对象被分配时，该slab将从partial链表移入full链表，当slab中的最后一个已分配对象被释放时，该slab将从partial链表移入free链表。
+-  slabs_full：该链表中的所有slab中的对象都已经被分配，没有空闲对象。
+-  slabs_free：该链表中的slab中的对象全部空闲，未被使用；
 
 Linux把缓冲区分为专用和通用，它们分别用于不同的目的，专用slab用于特定的场合(如TCP、UDP等都有自己的专用缓冲区，当其需要小内存时，就会从自己的slab专用缓冲区中分配)，而通用缓冲区就是用于常规小内存的分配(如kmalloc)，我们可以通过/proc/slabinfo文件查看slab的状态，如下所示（部分显示）。
 ```c
