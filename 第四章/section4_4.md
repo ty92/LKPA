@@ -354,7 +354,7 @@ Linux中对Slab分配模式有所改进，它对内存区的处理并不需要�
 
 <center>图4.12 Slab的组成</center>
 
-&emsp; &emsp;实际上，缓冲区是由多个kmem_cache结构描述的cache组成的，就是主存中的一片区域，把这片区域划分为多个块，每块就是一个Slab，每个Slab由一个或多个页面组成，每个Slab中存放的就是对象。kmem_cache可以称为slab缓存，该结构中包含了对当前缓存区各种属性信息的描述，每个slab缓存都有特定的名称，如下文中的kmalloc-8、kmalloc-16等。该结构体中的部分字段如下所示，并有相关解释。
+&emsp; &emsp;实际上，缓冲区是由多个kmem_cache结构描述的cache组成的，就是主存中的一片区域，把这片区域划分为多个块，每块就是一个Slab，每个Slab由一个或多个页面组成，每个Slab中存放的就是对象。kmem_cache用于管理缓存，该结构中包含了对当前缓存区各种属性信息的描述，每个缓存都有特定的名称，如下文中的kmalloc-8、kmalloc-16等。该结构体中的部分字段如下所示，并有相关解释。
 
 ```
 struct kmem_cache {
@@ -371,7 +371,26 @@ struct kmem_cache {
 	struct array_cache *array[NR_CPUS + MAX_NUMNODES];
 }
 ```
-&emsp; &emsp;其中比较重要的是node字段，指向的kmem_cache_node结构体类型中保存着slab的三个链表：
+&emsp; &emsp;其中比较重要的是为kmem_cache_node结构体类型的node字段，其中定义了slab的三个链表：
+```
+struct kmem_cache_node {
+	spinlock_t list_lock;
+
+#ifdef CONFIG_SLAB   /* slab相关 */
+	struct list_head slabs_partial;	/* 包含空闲对象和已分配对象的slab链表 partial list first, better asm code */
+	struct list_head slabs_full;    /* 全部已分配的链表 */
+	struct list_head slabs_free;
+	unsigned long free_objects;     /* 缓存中空闲对象的个数 */
+	unsigned int free_limit; 	/* 空闲对象的上限 */
+	unsigned int colour_next;	/* Per-node cache coloring */
+	struct array_cache *shared;	/* shared per node */
+	struct array_cache **alien;	/* on other nodes */
+	unsigned long next_reap;	/* updated without locking */
+	int free_touched;		/* updated without locking */
+#endif
+	……	/* slub相关 */
+}
+```
 -  slabs_partial：有部分空闲对象的slab链表，优先从此链表分配对象，当slab中的最后一个空闲对象被分配时，该slab将从partial链表移入full链表，当slab中的最后一个已分配对象被释放时，该slab将从partial链表移入free链表。
 -  slabs_full：该链表中的所有slab中的对象都已经被分配，没有空闲对象。
 -  slabs_free：该链表中的slab中的对象全部空闲，未被使用；
@@ -577,9 +596,8 @@ char *buf;
 buf = kmalloc(BUF_SIZE, GFP_ATOMIC);
 
 if (!buf)
-```
-
 /*内存分配出错*/
+```
 
 之后，当我们不再需要这个内存时，别忘了释放它：
 
@@ -587,7 +605,23 @@ kfree(buf)
 
 #### 5 进化版slab分配器——slub
 多年以来，Linux内核中一直使用slab分配器来完成小内存的分配，但是，随着系统规模的不断增大，Slab逐渐暴露出自身的不足：Slab分配器为了增加分配速度，引入了一些管理数组，如Slab管理区中的kmem_bufctl数组，但是增加了一定的复杂性，随着系统越来越庞大，对内催的开销也越明显；Slab分配器中的每个结点都有三个链表：空闲slab链表、部分空slab链表、已满slab链表，这三个链表维护者对应的slab缓冲区。随着内存分配变得复杂，不利于内存的合理使用；对NUMA支持复杂等。为了解决这些问题，内核开发人员Christoph Lameter 在 Linux 内核 2.6.22 版本中引入一种新的解决方案：SLUB 分配器。
-Slub分配器的设计比较简化，同时保留了Slab分配器的基本思想，
+相比于Slab分配器，Slub分配器的设计更加简化，同时保留了Slab分配器的基本思想，并兼容Slab的对外接口，可以容易的使用Slub更换原有的Slab分配器。Slub是在Slab的基础上进行了优化，其都是由kmem_cache结构体标识一块缓冲区，在Slub分配器中kmem_cache_node结构体中去除了全部空闲slab链表，全满slab链表只有在 编译时开启了CONFIG_SLUB_DEBUG选项时才会生效，在Slub分配器中主要用于调试。kmem_cache_node结构体如下所示。
+```
+struct kmem_cache_node {
+	spinlock_t list_lock;
+	……   /*slab 相关*/
+
+#ifdef CONFIG_SLUB     /* slub相关 */
+	unsigned long nr_partial;
+	struct list_head partial;
+#ifdef CONFIG_SLUB_DEBUG
+	atomic_long_t nr_slabs;
+	atomic_long_t total_objects;
+	struct list_head full;
+#endif
+#endif
+}
+```
 
 ### 4.4.6 内核空间非连续内存区的分配
 
