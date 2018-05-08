@@ -350,7 +350,7 @@ Linux中对Slab分配模式有所改进，它对内存区的处理并不需要�
 &emsp; &emsp;Slab分配模式把对象分组放进缓冲区（尽管英文中使用了Cache这个词，但实际上指的是内存中的区域，而不是指硬件高速缓存）。因为缓冲区的组织和管理与硬件高速缓存的命中率密切相关，因此，Slab缓冲区并非由各个对象直接构成，而是由一连串的“大块（Slab）”构成，而每个大块中则包含了若干个同种类型的对象，这些对象或已被分配，或空闲，如图4.12所示。一般而言，对象分两种，一种是大对象，一种是小对象。所谓小对象，是指在一个页面中可以容纳下好几个对象的那种。例如，一个inode结构大约占300多个字节，因此，一个页面中可以容纳8个以上的inode结构，因此，inode结构就为小对象。Linux内核中把小于512字节的对象叫做小对象，大于512字节的对象叫做大对象。
 
 <div style="text-align: center">
-<img src="4_12.png"/>
+<img src="slab-1.png"/>
 </div>
 
 <center>图4.12 Slab的组成</center>
@@ -630,23 +630,15 @@ struct kmem_cache {
 struct kmem_cache_cpu {
 	void **freelist;	/* 指向下一个空闲对象，用于快速找到对象*/
 	unsigned long tid;	/* Globally unique transaction id */
-
-	/* 
-	  CPU当前使用的slab缓冲区描述符，freelist会指向此slab的下一个空闲对象.
-	  内核中slab缓冲区描述符与页描述符共用一个struct page结构
-	*/
 	struct page *page;	/* The slab from which we are allocating */
-	/* 
-	   CPU的部分空slab链表，放到CPU的部分空slab链表中的slab会被冻结，
-	   而放入node中的部分空slab链表则解冻，冻结标志在slab缓冲区描述符中
-	*/
 	struct page *partial;	/* Partially allocated frozen slabs */
 #ifdef CONFIG_SLUB_STATS
 	unsigned stat[NR_SLUB_STAT_ITEMS];
 #endif
 };
 ```
-Slub分配器中kmem_cache_node结构体和Slab中有所区别，其中去除了全部空闲slab链表，全满slab链表只有在 编译时开启了CONFIG_SLUB_DEBUG选项时才会生效，在Slub分配器中主要用于调试。kmem_cache_node结构体如下所示。
+&emsp; &emsp;page字段指向CPU当前正在使用的slab缓冲区描述符，内核中slab缓冲区描述符与页描述符共用一个struct page结构，freelist会指向此slab的下一个空闲对象；partial字段为struct page结构体类型，表示CPU的部分空slab链表，放到CPU的部分空slab链表中的slab会被冻结，而放入node中的部分空slab链表则解冻。Slab分配器中每CPU中保存的是空闲对象链表，而Slab分配器中的每CPU中保存的是一个slab缓冲区。
+&emsp; &emsp;Slub分配器中kmem_cache_node结构体和Slab中有所区别，其中去除了全部空闲slab链表，全满slab链表只有在 编译时开启了CONFIG_SLUB_DEBUG选项时才会生效，在Slub分配器中主要用于调试。kmem_cache_node结构体如下所示。
 ```
 struct kmem_cache_node {
 	spinlock_t list_lock;
@@ -665,7 +657,7 @@ struct kmem_cache_node {
 ```
 &emsp; &emsp;Slub分配器相关的主要字段有：list_lock表示一个自旋锁；nr_partial表示当前节点中的slab数量；partial表示一个双向循环链表，其中的slab部分空闲；最后几个字段就是上文提到的用于调试时使用。相比于Slab机制的组成，Slub的组成更加简单，如图4_slub所示。
 <div style="text-align: center">
-<img src="4_slub.png"/>
+<img src="slub.png"/>
 </div>
 
 <center>图4.slub Slub的组成</center>
