@@ -625,7 +625,28 @@ struct kmem_cache {
 	struct kmem_cache_node *node[MAX_NUMNODES]; /* slab节点，在NUMA系统中，每个node都有一个struct kmem_cache_node的数据结构 */
 };
 ```
-&emsp; &emsp;每个CPU都对应一个struct kmem_cache_cpu结构体，描述符CPU的本地slab缓存；Slub分配器中kmem_cache_node结构体和Slab中有所区别，其中去除了全部空闲slab链表，全满slab链表只有在 编译时开启了CONFIG_SLUB_DEBUG选项时才会生效，在Slub分配器中主要用于调试。kmem_cache_node结构体如下所示。
+&emsp; &emsp;每个CPU都对应一个struct kmem_cache_cpu结构体，描述符CPU的本地slab缓存，定义如下所示。
+```
+struct kmem_cache_cpu {
+	void **freelist;	/* 指向下一个空闲对象，用于快速找到对象*/
+	unsigned long tid;	/* Globally unique transaction id */
+
+	/* 
+	  CPU当前使用的slab缓冲区描述符，freelist会指向此slab的下一个空闲对象.
+	  内核中slab缓冲区描述符与页描述符共用一个struct page结构
+	*/
+	struct page *page;	/* The slab from which we are allocating */
+	/* 
+	   CPU的部分空slab链表，放到CPU的部分空slab链表中的slab会被冻结，
+	   而放入node中的部分空slab链表则解冻，冻结标志在slab缓冲区描述符中
+	*/
+	struct page *partial;	/* Partially allocated frozen slabs */
+#ifdef CONFIG_SLUB_STATS
+	unsigned stat[NR_SLUB_STAT_ITEMS];
+#endif
+};
+```
+Slub分配器中kmem_cache_node结构体和Slab中有所区别，其中去除了全部空闲slab链表，全满slab链表只有在 编译时开启了CONFIG_SLUB_DEBUG选项时才会生效，在Slub分配器中主要用于调试。kmem_cache_node结构体如下所示。
 ```
 struct kmem_cache_node {
 	spinlock_t list_lock;
