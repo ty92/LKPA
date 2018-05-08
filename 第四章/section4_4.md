@@ -375,7 +375,7 @@ struct kmem_cache {
 	struct array_cache *array[NR_CPUS + MAX_NUMNODES];
 }
 ```
-&emsp; &emsp;其中比较重要的是为kmem_cache_node结构体类型的node字段，其中定义了slab的三个链表，如下结构体所示。
+&emsp; &emsp;其中比较重要的是为kmem_cache_node结构体类型的node字段，其中定义了slab的三个链表，如下结构体所示。kmem_cache结构体中的array字段表示slab的per-CPU缓存，即就是为每个CPU分配一个slab对象的per-CPU缓存。
 ```
 struct kmem_cache_node {
 	spinlock_t list_lock;		/* 自旋锁 */
@@ -399,9 +399,9 @@ struct kmem_cache_node {
 -  slabs_full：该链表中的所有slab中的对象都已经被分配，没有空闲对象。
 -  slabs_free：该链表中的slab中的对象全部空闲，未被使用；
 
-kmem_cache结构体中的array字段表示slab的per-CPU缓存，即就是为每个CPU分配一个slab对象的per-CPU缓存。介绍完Slab分配机制中的主要数据结构后，一个常规的Slab对象申请流程就是这样的：系统首先会从per-CPU空闲对象链表中尝试获取对象，若失败，则尝试从共享的CPU空闲对象链表中获取；如果继续失败，就会从Slab链表中分配（前边提到的slab partial链表）；如果此时仍然分配失败，kmem_cache则会尝试从伙伴系统中获取一组连续的物理页框建立一个新的Slab，然后从该Slab中分配一个对象。对象释放过程类似，会先将其释放到per-CPU空闲链表中，若该链表对象超过限额，将其中的batchcount个对象移动到所有CPU共享的空闲对象链表中；若所有CPU共享的空闲对象链表中的对象也太多了，则会将其中的batchcount个对象移动到Slab链表中；若Slab链表中的空闲对象也过多了，则会将一些空闲对象所占的页框归还给伙伴系统中。
+&emsp; &emsp;介绍完Slab分配机制中的主要数据结构后，一个常规的Slab对象申请流程就是这样的：系统首先会从per-CPU空闲对象链表中尝试获取对象，若失败，则尝试从共享的CPU空闲对象链表中获取；如果继续失败，就会从Slab链表中分配（前边提到的slab partial链表）；如果此时仍然分配失败，kmem_cache则会尝试从伙伴系统中获取一组连续的物理页框建立一个新的Slab，然后从该Slab中分配一个对象。对象释放过程类似，会先将其释放到per-CPU空闲链表中，若该链表对象超过限额，将其中的batchcount个对象移动到所有CPU共享的空闲对象链表中；若所有CPU共享的空闲对象链表中的对象也太多了，则会将其中的batchcount个对象移动到Slab链表中；若Slab链表中的空闲对象也过多了，则会将一些空闲对象所占的页框归还给伙伴系统中。
 
-Linux把缓冲区分为专用和通用，它们分别用于不同的目的，专用slab用于特定的场合(如TCP、UDP等都有自己的专用缓冲区，当其需要小内存时，就会从自己的slab专用缓冲区中分配)，而通用缓冲区就是用于常规小内存的分配(如kmalloc)，我们可以通过/proc/slabinfo文件查看slab的状态，如下所示（部分显示）。
+&emsp; &emsp;Linux把缓冲区分为专用和通用，它们分别用于不同的目的，专用slab用于特定的场合(如TCP、UDP等都有自己的专用缓冲区，当其需要小内存时，就会从自己的slab专用缓冲区中分配)，而通用缓冲区就是用于常规小内存的分配(如kmalloc)，我们可以通过/proc/slabinfo文件查看slab的状态，如下所示（部分显示）。
 ```c
 # name            <active_objs> <num_objs> <objsize> <objperslab> <pagesperslab> : tunables <limit> <batchcount> <sharedfactor> : slabd
 ata <active_slabs> <num_slabs> <sharedavail>
@@ -451,12 +451,11 @@ kmalloc-8          82432  82432      8  512    1 : tunables    0    0    0 : sla
 kmem_cache_node      128    128     64   64    1 : tunables    0    0    0 : slabdata      2      2      0
 kmem_cache            96     96    256   16    1 : tunables    0    0    0 : slabdata      6      6      0
 ```
-如刚才所说，xfs_dquot、TCP、UDP等都是slab专用缓冲区，后边的如dma-kmalloc-32、kmalloc-32 就是slab通用缓冲区。注意kmalloc-x都对应一个dma-kmalloc-x类型的slab通用缓冲区，这种类型是使用了ZONE_DMA区域的内存，方便用于DMA模式申请内存。
+&emsp; &emsp;如刚才所说，xfs_dquot、TCP、UDP等都是slab专用缓冲区，后边的如dma-kmalloc-32、kmalloc-32 就是slab通用缓冲区。注意kmalloc-x都对应一个dma-kmalloc-x类型的slab通用缓冲区，这种类型是使用了ZONE_DMA区域的内存，方便用于DMA模式申请内存。
 
 ##### 2 Slab专用缓冲区的建立和释放
 
-专用缓冲区主要用于频繁使用的数据结构，如task_struct、mm_struct、vm_area_struct、 file、 dentry、
-inode等。缓冲区是用struct kmem_cache结构体类型描述的，通过kmem_cache_create（）来建立，函数原型为：
+&emsp; &emsp;专用缓冲区主要用于频繁使用的数据结构，如task_struct、mm_struct、vm_area_struct、 file、 dentry、inode等。缓冲区是用struct kmem_cache结构体类型描述的，通过kmem_cache_create（）来建立，函数原型为：
 
 ```c
 struct kmem_cache *kmem_cache_create(const char *name, 
@@ -506,7 +505,7 @@ slab必须调用__alloc_pages()获取新的页面，flags是传递给该函数�
 
 ##### 3 Slab分配举例
 
-让我们考察一个实际的例子，这个例子用的是task_struct结构（进程控制块），代码取自kernel/fork.c。
+&emsp; &emsp;让我们考察一个实际的例子，这个例子用的是task_struct结构（进程控制块），代码取自kernel/fork.c。
 
    首先，内核用一个全局变量存放指向task_struct缓冲区的指针：
 
@@ -522,9 +521,7 @@ slab必须调用__alloc_pages()获取新的页面，flags是传递给该函数�
 			ARCH_MIN_TASKALIGN, SLAB_PANIC | SLAB_NOTRACK, NULL);
 ```
 
-这样就创建了一个名为task_struct_cachep的缓冲区，其中存放的就是类型为struct
-task_struct的对象。对象被创建在slab中缺省的偏移量处，并完全按缓冲区对齐。没有构造函数或析构函数。注意要检查返回值是否为NULL，
-NULL表示失败。在这种情况下，如果内核不能创建task_struct_cachep缓冲区，它就会陷入混乱，因为这时系统操作一定要用到该缓冲区（没有进程控制块，操作系统自然不能正常运行）。
+&emsp; &emsp;这样就创建了一个名为task_struct_cachep的缓冲区，其中存放的就是类型为struct task_struct的对象。对象被创建在slab中缺省的偏移量处，并完全按缓冲区对齐。没有构造函数或析构函数。注意要检查返回值是否为NULL，NULL表示失败。在这种情况下，如果内核不能创建task_struct_cachep缓冲区，它就会陷入混乱，因为这时系统操作一定要用到该缓冲区（没有进程控制块，操作系统自然不能正常运行）。
 
 每当进程调用fork()时，一定会创建一个新的进程控制块。这是在dup_task_sturct()中完成的，而该函数会被do_fork()调用：
 
@@ -553,8 +550,7 @@ static inline void *kmem_cache_alloc_node(struct kmem_cache *cachep,
 }
 ```
 
-进程执行完后，如果没有子进程在等待的话，它的进程控制块就会被释放，并返回给task_struct_cachep
-slab缓冲区。这是在free_task_struct()中执行的（这里，tsk是现有的进程）：
+&emsp; &emsp;进程执行完后，如果没有子进程在等待的话，它的进程控制块就会被释放，并返回给task_struct_cachep slab缓冲区。这是在free_task_struct()中执行的（这里，tsk是现有的进程）：
 
 ```c
 static inline void free_task_struct(struct task_struct *tsk)
@@ -563,7 +559,7 @@ static inline void free_task_struct(struct task_struct *tsk)
 }
 ```
 
-由于进程控制块是内核的核心组成部分，时刻都要用到，因此task_struct_cachep缓冲区绝不会销毁。即使真能销毁，我们也要通过下列函数：
+&emsp; &emsp;由于进程控制块是内核的核心组成部分，时刻都要用到，因此task_struct_cachep缓冲区绝不会销毁。即使真能销毁，我们也要通过下列函数：
 
 ```c
 int err;
@@ -575,11 +571,11 @@ if (err)
 /*出错，撤销缓冲区*/
 ```
 
-如果要频繁创建很多相同类型的对象，那么，就应该考虑使用slab缓冲区。确切地说，不要自己去实现空闲链表！
+&emsp; &emsp;如果要频繁创建很多相同类型的对象，那么，就应该考虑使用slab缓冲区。确切地说，不要自己去实现空闲链表！
 
 ##### 4. 通用缓冲区
 
-在内核中初始化开销不大的数据结构可以合用一个通用的缓冲区。通用缓冲区最小的为32字节，然后依次为64、128、…直至128K（即32个页面），但是，对通用缓冲区的管理又采用的是Slab方式。从通用缓冲区中分配和释放缓冲区的函数为：
+&emsp; &emsp;在内核中初始化开销不大的数据结构可以合用一个通用的缓冲区。通用缓冲区最小的为32字节，然后依次为64、128、…直至128K（即32个页面），但是，对通用缓冲区的管理又采用的是Slab方式。从通用缓冲区中分配和释放缓冲区的函数为：
 
 ```c
 void *kmalloc(size_t size, int flags);
@@ -587,14 +583,14 @@ void *kmalloc(size_t size, int flags);
 Void kfree(const void *ptr);
 ```
 
-因此，当一个数据结构的使用根本不频繁时，或其大小不足一个页面时，就没有必要给其分配专用缓冲区，而应该调用kmallo()进行分配。如果数据结构的大小接近一个页面，则干脆通过__get_free_pages()为之分配一个页面。
+&emsp; &emsp;因此，当一个数据结构的使用根本不频繁时，或其大小不足一个页面时，就没有必要给其分配专用缓冲区，而应该调用kmallo()进行分配。如果数据结构的大小接近一个页面，则干脆通过__get_free_pages()为之分配一个页面。
 
-事实上，在内核中，尤其是驱动程序中，有大量的数据结构仅仅是一次性使用，而且所占内存只有几十个字节，因此，一般情况下调用kmallo()给内核数据结构分配内存就足够了。另外，因为在Linux2.0以前的版本一般都调用kmallo()给内核数据结构分配内存，因此，调用该函数的一个优点是让你开发的驱动程序能保持向后兼容。
+&emsp; &emsp;事实上，在内核中，尤其是驱动程序中，有大量的数据结构仅仅是一次性使用，而且所占内存只有几十个字节，因此，一般情况下调用kmallo()给内核数据结构分配内存就足够了。另外，因为在Linux2.0以前的版本一般都调用kmallo()给内核数据结构分配内存，因此，调用该函数的一个优点是让你开发的驱动程序能保持向后兼容。
 
-kfree()函数释放由kmalloc()分配出来的内存块。如果想要释放的内存不是由kmalloc()分配的，或者想要释放的内存早就被释放过了，比如说释放属于内核其它部分的内存，调用这个函数会导致严重的后果。与用户空间类似，分配和回收要注意配对使用，以避免内存泄漏和其它bug。注意，调用kfree(NULL
+&emsp; &emsp;kfree()函数释放由kmalloc()分配出来的内存块。如果想要释放的内存不是由kmalloc()分配的，或者想要释放的内存早就被释放过了，比如说释放属于内核其它部分的内存，调用这个函数会导致严重的后果。与用户空间类似，分配和回收要注意配对使用，以避免内存泄漏和其它bug。注意，调用kfree(NULL
 )是安全的。
 
-让我们看一个在中断处理程序中分配内存的例子。在这个例子中，中断处理程序想分配一个缓冲区来保存输入数据。BUF_SIZE预定义为缓冲区长度，它应该是大于两个字节。
+&emsp; &emsp;让我们看一个在中断处理程序中分配内存的例子。在这个例子中，中断处理程序想分配一个缓冲区来保存输入数据。BUF_SIZE预定义为缓冲区长度，它应该是大于两个字节。
 
 ```c
 char *buf;
@@ -610,9 +606,9 @@ if (!buf)
 kfree(buf)
 
 #### 4.4.5.2 进化版Slab分配器——Slub
-多年以来，Linux内核中一直使用slab分配器来完成小内存的分配，但是，随着系统规模的不断增大，Slab逐渐暴露出自身的不足：Slab分配器为了增加分配速度，引入了一些管理数组，如Slab管理区中的kmem_bufctl数组，但是增加了一定的复杂性，随着系统越来越庞大，对内催的开销也越明显；Slab分配器中的每个结点都有三个链表：空闲slab链表、部分空slab链表、已满slab链表，这三个链表维护者对应的slab缓冲区。随着内存分配变得复杂，不利于内存的合理使用；对NUMA支持复杂等。为了解决这些问题，内核开发人员Christoph Lameter 在 Linux 内核 2.6.22 版本中引入一种新的解决方案：SLUB 分配器。
+&emsp; &emsp;多年以来，Linux内核中一直使用slab分配器来完成小内存的分配，但是，随着系统规模的不断增大，Slab逐渐暴露出自身的不足：Slab分配器为了增加分配速度，引入了一些管理数组，如Slab管理区中的kmem_bufctl数组，但是增加了一定的复杂性，随着系统越来越庞大，对内催的开销也越明显；Slab分配器中的每个结点都有三个链表：空闲slab链表、部分空slab链表、已满slab链表，这三个链表维护者对应的slab缓冲区。随着内存分配变得复杂，不利于内存的合理使用；对NUMA支持复杂等。为了解决这些问题，内核开发人员Christoph Lameter 在 Linux 内核 2.6.22 版本中引入一种新的解决方案：SLUB 分配器。
 
-相比于Slab分配器，Slub分配器的设计更加简化，同时保留了Slab分配器的基本思想，并兼容Slab的对外接口，可以容易的使用Slub更换原有的Slab分配器。Slub是在Slab的基础上进行了优化，其都是由kmem_cache结构体标识一块缓冲区，Slub的kmem_cache结构体定义如下所示，并对重要的字段进行了解释。
+&emsp; &emsp;相比于Slab分配器，Slub分配器的设计更加简化，同时保留了Slab分配器的基本思想，并兼容Slab的对外接口，可以容易的使用Slub更换原有的Slab分配器。Slub是在Slab的基础上进行了优化，其都是由kmem_cache结构体标识一块缓冲区，Slub的kmem_cache结构体定义如下所示，并对重要的字段进行了解释。
 ```
 struct kmem_cache {
 	struct kmem_cache_cpu __percpu *cpu_slab;	/* 为每个CPU创建一个本地的slab缓存，优先从该缓存中分配 */
@@ -629,7 +625,7 @@ struct kmem_cache {
 	struct kmem_cache_node *node[MAX_NUMNODES]; /* slab节点，在NUMA系统中，每个node都有一个struct kmem_cache_node的数据结构 */
 };
 ```
-每个CPU都对应一个struct kmem_cache_cpu结构体，描述符CPU的本地slab缓存；Slub分配器中kmem_cache_node结构体和Slab中有所区别，其中去除了全部空闲slab链表，全满slab链表只有在 编译时开启了CONFIG_SLUB_DEBUG选项时才会生效，在Slub分配器中主要用于调试。kmem_cache_node结构体如下所示。
+&emsp; &emsp;每个CPU都对应一个struct kmem_cache_cpu结构体，描述符CPU的本地slab缓存；Slub分配器中kmem_cache_node结构体和Slab中有所区别，其中去除了全部空闲slab链表，全满slab链表只有在 编译时开启了CONFIG_SLUB_DEBUG选项时才会生效，在Slub分配器中主要用于调试。kmem_cache_node结构体如下所示。
 ```
 struct kmem_cache_node {
 	spinlock_t list_lock;
@@ -646,20 +642,20 @@ struct kmem_cache_node {
 #endif
 }
 ```
-Slub分配器相关的主要字段有：list_lock表示一个自旋锁；nr_partial表示当前节点中的slab数量；partial表示一个双向循环链表，其中的slab部分空闲；最后几个字段就是上文提到的用于调试时使用。相比于Slab机制的组成，Slub的组成更加简单，如图4_slub所示。
+&emsp; &emsp;Slub分配器相关的主要字段有：list_lock表示一个自旋锁；nr_partial表示当前节点中的slab数量；partial表示一个双向循环链表，其中的slab部分空闲；最后几个字段就是上文提到的用于调试时使用。相比于Slab机制的组成，Slub的组成更加简单，如图4_slub所示。
 <div style="text-align: center">
 <img src="4_slub.png"/>
 </div>
 
 <center>图4.slub Slub的组成</center>
 
-为了保证内核其它模块能够无缝迁移到Slub分配器，Slub保留了原有Slab分配器所有的接口API函数，在上一小节已经进行了简单的介绍，此处就不再介绍。
+&emsp; &emsp;为了保证内核其它模块能够无缝迁移到Slub分配器，Slub保留了原有Slab分配器所有的接口API函数，在上一小节已经进行了简单的介绍，此处就不再介绍。
 
 ### 4.4.6 内核空间非连续内存区的分配
 
-我们说，任何时候，CPU访问的都是虚拟内存，那么，在你编写驱动程序，或者编写模块时，Linux给你分配什么样的内存？它处于4G(32-bit)/256T(64-bit)空间的什么位置？这就是我们要讨论的非连续内存，即就是将物理地址不连续的页框映射到线性地址连续的线性地址空间。
+&emsp; &emsp;我们说，任何时候，CPU访问的都是虚拟内存，那么，在你编写驱动程序，或者编写模块时，Linux给你分配什么样的内存？它处于4G(32-bit)/256T(64-bit)空间的什么位置？这就是我们要讨论的非连续内存，即就是将物理地址不连续的页框映射到线性地址连续的线性地址空间。
 
-首先，对于32-bit结构来说非连续内存处于3G到4G之间，也就是处于内核空间，如图4.14所示：
+&emsp; &emsp;首先，对于32-bit结构来说非连续内存处于3G到4G之间，也就是处于内核空间，如图4.14所示：
 
 <div style="text-align: center">
 <img src="4_13.png"/>
@@ -667,17 +663,17 @@ Slub分配器相关的主要字段有：list_lock表示一个自旋锁；nr_part
 
 <center>图4.14 从PAGE_OFFSET开始的内核地址区间</center>
 
-图中，PAGE_OFFSET为3GB，high_memory为保存物理地址最高值的变量，VMALLOC_START为非连续区的的起始地址。
+&emsp; &emsp;图中，PAGE_OFFSET为3GB，high_memory为保存物理地址最高值的变量，VMALLOC_START为非连续区的的起始地址。
 
-在物理地址的末尾与第一个内存区之间插入了一个8MB的区间，这是一个安全区，目的是为了“捕获”对非连续区的非法访问。出于同样的理由，在其他非连续的内存区之间也插入了4K大小的安全区。每个非连续内存区的大小都是4096的倍数。
+&emsp; &emsp;在物理地址的末尾与第一个内存区之间插入了一个8MB的区间，这是一个安全区，目的是为了“捕获”对非连续区的非法访问。出于同样的理由，在其他非连续的内存区之间也插入了4K大小的安全区。每个非连续内存区的大小都是4096的倍数。
 
-而对于64-bit架构来说，非连续内存处于128T的内核空间中，整体结构相比于32bit架构没有太大的变化，只是区间更加的大了，
+&emsp; &emsp;而对于64-bit架构来说，非连续内存处于128T的内核空间中，整体结构相比于32bit架构没有太大的变化，只是区间更加的大了，
 在直接映射内存的64TB空间后边是一个1TB的空洞，接着就是32TB的vmalloc非连续内存区空间，以VMALLOC_START开始，VMALLOC_END结束，内核定义如下所示：
 ```c
 #define VMALLOC_START    _AC(0xffffc90000000000, UL)
 #define VMALLOC_END      _AC(0xffffe8ffffffffff, UL)
 ```
-描述非连续区的数据结构主要有两个：struct vm_struct结构体和struct vmap_area结构体，所有的vm_struct都会链入vmlist链表来管理，使用vmap_area结构体主要是为了引入红黑树来组织以提高性能，和vm_struct是有对应关系的：
+&emsp; &emsp;描述非连续区的数据结构主要有两个：struct vm_struct结构体和struct vmap_area结构体，所有的vm_struct都会链入vmlist链表来管理，使用vmap_area结构体主要是为了引入红黑树来组织以提高性能，和vm_struct是有对应关系的：
 
 ```c
 struct vm_struct {
@@ -691,7 +687,7 @@ struct vm_struct {
 	const void		*caller;
 };
 ```
-其中，next指向下一个vm_struct，addr指向第一个内存单元的虚拟地址，size对应分配内存的大小，flag为相应的标志，pages是页的地址，nr_pages是页的数量，phys_addr一般为0(ioremap时会用到)，caller是调用者的地址。
+&emsp; &emsp;其中，next指向下一个vm_struct，addr指向第一个内存单元的虚拟地址，size对应分配内存的大小，flag为相应的标志，pages是页的地址，nr_pages是页的数量，phys_addr一般为0(ioremap时会用到)，caller是调用者的地址。
 ```c
 struct vmap_area {
 	unsigned long va_start;
@@ -706,22 +702,22 @@ struct vmap_area {
 ```
 va_start、va_end分别表示vmalloc区的起始终止地址，flags为类型标识，rb_node就是按红黑树相关的成员对象，vm表示对应的vm_struct对象。
 
-函数__get_vm_area_node()创建一个新的非连续区结构，其中调用了kzalloc_node()分配vm_struct结构并初始化为0，alloc_vmap_area()函数分配vmap_area。
+&emsp; &emsp;函数__get_vm_area_node()创建一个新的非连续区结构，其中调用了kzalloc_node()分配vm_struct结构并初始化为0，alloc_vmap_area()函数分配vmap_area。
 
 vmalloc()函数给内核分配一个非连续的内存区，其原型为：
 ```c
 void * vmalloc (unsigned long size)
 ```
-函数首先把size参数取整为页面大小（4096）的一个倍数，也就是按页的大小进行对齐，然后进行有效性检查，如果有大小合适的可用内存，就调用__get_vm_area_node（）获得一个内存区的结构。最后调用函数__vmalloc_area_node()真正进行非连续内存区物理页框的分配，并将分散的物理页框分别映射到连续的vmalloc区。
+&emsp; &emsp;函数首先把size参数取整为页面大小（4096）的一个倍数，也就是按页的大小进行对齐，然后进行有效性检查，如果有大小合适的可用内存，就调用__get_vm_area_node（）获得一个内存区的结构。最后调用函数__vmalloc_area_node()真正进行非连续内存区物理页框的分配，并将分散的物理页框分别映射到连续的vmalloc区。
 
 vmalloc()与 kmalloc()都是在内核代码中用来分配内存的函数，但二者有何区别？
 
-从前面的介绍已经看出，这两个函数所分配的内存都处于内核空间；但位置不同，kmalloc()分配的内存处于直接映射内存区间之间，这一段内核空间与物理内存的映射一一对应，而vmalloc()分配的内存在VMALLOC_START～VMALLOC_END之间，这一段非连续内存区映射到物理内存也可能是非连续的。
+&emsp; &emsp;从前面的介绍已经看出，这两个函数所分配的内存都处于内核空间；但位置不同，kmalloc()分配的内存处于直接映射内存区间之间，这一段内核空间与物理内存的映射一一对应，而vmalloc()分配的内存在VMALLOC_START～VMALLOC_END之间，这一段非连续内存区映射到物理内存也可能是非连续的。
 
-vmalloc()工作方式与kmalloc()类似，
+&emsp; &emsp;vmalloc()工作方式与kmalloc()类似，
 其主要差别在于前者分配的物理地址无需连续，而后者确保页在物理上是连续的（虚地址自然也是连续的）。
 
-尽管仅仅在某些情况下才需要物理上连续的内存块，但是，很多内核代码都调用kmalloc()，而不是用vmalloc()获得内存。这主要是出于性能的考虑。vmalloc()函数为了把物理上不连续的页面转换为虚拟地址空间上连续的页，必须专门建立页表项。还有，通过vmalloc()获得的页必须一个一个的进行映射（因为它们物理上不是连续的），这就会导致比直接内存映射大得多的缓冲区刷新。因为这些原因，vmalloc()仅在绝对必要时才会使用——典型的就是为了获得大块内存时，例如，当模块被动态插入到内核中时，就把模块装载到由vmalloc()分配的内存上。
+&emsp; &emsp;尽管仅仅在某些情况下才需要物理上连续的内存块，但是，很多内核代码都调用kmalloc()，而不是用vmalloc()获得内存。这主要是出于性能的考虑。vmalloc()函数为了把物理上不连续的页面转换为虚拟地址空间上连续的页，必须专门建立页表项。还有，通过vmalloc()获得的页必须一个一个的进行映射（因为它们物理上不是连续的），这就会导致比直接内存映射大得多的缓冲区刷新。因为这些原因，vmalloc()仅在绝对必要时才会使用——典型的就是为了获得大块内存时，例如，当模块被动态插入到内核中时，就把模块装载到由vmalloc()分配的内存上。
 
 vmalloc()函数用起来比较简单：
 
@@ -743,7 +739,7 @@ vfree（buf）；
 
 ### 4.4.7 物理内存分配举例
 
-通过以上介绍我们了解到，调用伙伴算法的__get_free_pages()函数能分配一个或多个连续的物理页面，调用kmalloc()为不足一个页面的需求分配内存，而调用vmalloc()获得大块的内存区，以下代码说明了如何调用这几个函数，它们所返回的地址位于何处。
+&emsp; &emsp;通过以上介绍我们了解到，调用伙伴算法的__get_free_pages()函数能分配一个或多个连续的物理页面，调用kmalloc()为不足一个页面的需求分配内存，而调用vmalloc()获得大块的内存区，以下代码说明了如何调用这几个函数，它们所返回的地址位于何处。
 
 例 4-5 内存分配函数的调用
 
@@ -798,13 +794,11 @@ module_exit(cleanup_mmshow);
 
 #### 1. 把一个虚地址转换为物理地址
 
-我们知道，CPU访问应用程序的中的地址都是虚拟地址，然后通过MMU将虚拟地址转化成物理地址。虚拟内存和物理内存的映射关系是通过页表来实现的。由于内核要在各种不同的CPU上运行，甚至包括目前64位机器。因此，内核提供了四级页表的管理机制，它可以兼容各种架构的CPU。
+&emsp; &emsp;我们知道，CPU访问应用程序的中的地址都是虚拟地址，然后通过MMU将虚拟地址转化成物理地址。虚拟内存和物理内存的映射关系是通过页表来实现的。由于内核要在各种不同的CPU上运行，甚至包括目前64位机器。因此，内核提供了四级页表的管理机制，它可以兼容各种架构的CPU。
 
-因此，一个虚地址会被分为五个部分：页全局目录PGD（Page Global Directory），页上级目录PUD（Page Upper Directory），页中间目录PMD（Page Middle
-Directory），PT（Page Table）以及偏移量offset，其中的表项叫页表项PTE（Page Tabe
-Entry）。也就是说，一个线性地址中除去偏移量，分别存放了四级目录表项的索引值。具体的线性地址翻译成物理地址的过程是：首先从进程地址描述符中（mm_struct）中读取pgd字段的内容，它就是页全局目录的起始地址；然后页全局目录起始地址加上页全局目录索引获得页上级目录的起始地址；页上级目录的起始地址加上页上级目录的索引获得页中间目录的起始地址；页中间目录的起始地址加上页中间目录的索引获得页表起始地址；页表起始地址加上索引，可以得到完整的页表项内容；从页表项中取出物理页的基址，加上偏移量可以得到最终的物理地址。
+&emsp; &emsp;因此，一个虚地址会被分为五个部分：页全局目录PGD（Page Global Directory），页上级目录PUD（Page Upper Directory），页中间目录PMD（Page Middle Directory），PT（Page Table）以及偏移量offset，其中的表项叫页表项PTE（Page Tabe Entry）。也就是说，一个线性地址中除去偏移量，分别存放了四级目录表项的索引值。具体的线性地址翻译成物理地址的过程是：首先从进程地址描述符中（mm_struct）中读取pgd字段的内容，它就是页全局目录的起始地址；然后页全局目录起始地址加上页全局目录索引获得页上级目录的起始地址；页上级目录的起始地址加上页上级目录的索引获得页中间目录的起始地址；页中间目录的起始地址加上页中间目录的索引获得页表起始地址；页表起始地址加上索引，可以得到完整的页表项内容；从页表项中取出物理页的基址，加上偏移量可以得到最终的物理地址。
 
-接下来的程序是通过给定一个有效的虚地址，首先找到该虚地址所属的内存区，然后通过my_follow_page()函数得到该虚地址对应的物理地址。
+&emsp; &emsp;接下来的程序是通过给定一个有效的虚地址，首先找到该虚地址所属的内存区，然后通过my_follow_page()函数得到该虚地址对应的物理地址。
 
 ```c
 static unsigned long vaddr2paddr(struct vm_area_struct *vma, unsigned long vaddr)
