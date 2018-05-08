@@ -330,8 +330,9 @@ order指出要回收的页块的大小为2的order次幂个物理页。
 
 <center>图4.11-2 小内存分配器层次结构</center>
 
-下文将主要对Slab进行简要的介绍。
+下文将主要对Slab和Slub分配机制进行简要的介绍。
 
+#### 4.4.5.1 Slab分配机制
 &emsp; &emsp;从Linux2.2开始，内存管理的开发者采用了一种叫做slab的分配模式，该模式早在1994年就被开发出来，用于Sun Microsystem Solaris 2.4操作系统中。Slab的提出主要是基于以下考虑：
 
 1.  内核对内存区的分配取决于所存放数据的类型。例如，当给用户态进程分配页面时，内核调用__get_free_pages()函数，并用0填充所分配的页面。而给内核的数据结构分配页面时，事情没有这么简单，例如，要对数据结构所在的内存进行初始化、在不用时要收回它们所占用的内存。因此，Slab中引入了对象这个概念，所谓对象就是存放一组数据结构的内存区，其方法就是构造或析构函数，构造函数用于初始化数据结构所在的内存区，而析构函数收回相应的内存区。但为了便于理解，也可以把对象直接看作内核的数据结构。为了避免重复初始化对象，Slab分配模式并不丢弃已分配的对象，而是释放但把它们依然保留在内存中。当以后又要请求分配同一对象时，就可以从内存获取而不用进行初始化，这是在Solaris中引入Slab的基本思想。
@@ -344,7 +345,7 @@ Linux中对Slab分配模式有所改进，它对内存区的处理并不需要�
 
 4.  硬件高速缓存的使用，又为尽量减少对伙伴算法的调用提供了另一个理由，因为对伙伴算法的每次调用都会“弄脏”硬件高速缓存，因此，这就增加了对内存的平均访问次数。
 
-#### 1 slab分配器的结构
+##### 1 slab分配器的结构
 
 &emsp; &emsp;Slab分配模式把对象分组放进缓冲区（尽管英文中使用了Cache这个词，但实际上指的是内存中的区域，而不是指硬件高速缓存）。因为缓冲区的组织和管理与硬件高速缓存的命中率密切相关，因此，Slab缓冲区并非由各个对象直接构成，而是由一连串的“大块（Slab）”构成，而每个大块中则包含了若干个同种类型的对象，这些对象或已被分配，或空闲，如图4.12所示。一般而言，对象分两种，一种是大对象，一种是小对象。所谓小对象，是指在一个页面中可以容纳下好几个对象的那种。例如，一个inode结构大约占300多个字节，因此，一个页面中可以容纳8个以上的inode结构，因此，inode结构就为小对象。Linux内核中把小于512字节的对象叫做小对象，大于512字节的对象叫做大对象。
 
@@ -358,11 +359,14 @@ Linux中对Slab分配模式有所改进，它对内存区的处理并不需要�
 
 ```
 struct kmem_cache {
+	unsigned int shared;	/* 是否存在共享CPU高速缓存，为1则存在，0不存在 */
 	unsigned int size;	/* slab中分配给对象的大小（包括对齐填充字节，可能大于对象实际大小） */
 	unsigned int flags;		/* 描述slab缓冲区的一组标志 */
 	unsigned int num;		/* 每个slab中的对象个数 */
 	size_t colour;			/* cache colouring range */
 	unsigned int colour_off;	/* colour offset */
+	void (*ctor)(void *obj);	/* 构造函数，一般用于初始化这个SLAB高速缓存中的对象 */
+	const char *name;		/* kmem_cache的名称，在/proc/slabinfo中可以看到*/
 	struct list_head list;		/* 链表结构，将当前的kmem_cache链入全局链表slab_caches */
 	int refcount;			/* 引用计数 */
 	int object_size;		/* 对象实际大小 */
@@ -371,10 +375,10 @@ struct kmem_cache {
 	struct array_cache *array[NR_CPUS + MAX_NUMNODES];
 }
 ```
-&emsp; &emsp;其中比较重要的是为kmem_cache_node结构体类型的node字段，其中定义了slab的三个链表：
+&emsp; &emsp;其中比较重要的是为kmem_cache_node结构体类型的node字段，其中定义了slab的三个链表，如下结构体所示。
 ```
 struct kmem_cache_node {
-	spinlock_t list_lock;
+	spinlock_t list_lock;		/* 自旋锁 */
 
 #ifdef CONFIG_SLAB   /* slab相关 */
 	struct list_head slabs_partial;	/* 包含空闲对象和已分配对象的slab链表 partial list first, better asm code */
@@ -394,6 +398,8 @@ struct kmem_cache_node {
 -  slabs_partial：有部分空闲对象的slab链表，优先从此链表分配对象，当slab中的最后一个空闲对象被分配时，该slab将从partial链表移入full链表，当slab中的最后一个已分配对象被释放时，该slab将从partial链表移入free链表。
 -  slabs_full：该链表中的所有slab中的对象都已经被分配，没有空闲对象。
 -  slabs_free：该链表中的slab中的对象全部空闲，未被使用；
+
+kmem_cache结构体中的array字段表示slab的per-CPU缓存，即就是为每个CPU分配一个slab对象的per-CPU缓存。介绍完Slab分配机制中的主要数据结构后，一个常规的Slab对象申请流程就是这样的：系统首先会从per-CPU空闲对象链表中尝试获取对象，若失败，则尝试从共享的CPU空闲对象链表中获取；如果继续失败，就会从Slab链表中分配（前边提到的slab partial链表）；如果此时仍然分配失败，kmem_cache则会尝试从伙伴系统中获取一组连续的物理页框建立一个新的Slab，然后从该Slab中分配一个对象。对象释放过程类似，会先将其释放到per-CPU空闲链表中，若该链表对象超过限额，将其中的batchcount个对象移动到所有CPU共享的空闲对象链表中；若所有CPU共享的空闲对象链表中的对象也太多了，则会将其中的batchcount个对象移动到Slab链表中；若Slab链表中的空闲对象也过多了，则会将一些空闲对象所占的页框归还给伙伴系统中。
 
 Linux把缓冲区分为专用和通用，它们分别用于不同的目的，专用slab用于特定的场合(如TCP、UDP等都有自己的专用缓冲区，当其需要小内存时，就会从自己的slab专用缓冲区中分配)，而通用缓冲区就是用于常规小内存的分配(如kmalloc)，我们可以通过/proc/slabinfo文件查看slab的状态，如下所示（部分显示）。
 ```c
@@ -447,7 +453,7 @@ kmem_cache            96     96    256   16    1 : tunables    0    0    0 : sla
 ```
 如刚才所说，xfs_dquot、TCP、UDP等都是slab专用缓冲区，后边的如dma-kmalloc-32、kmalloc-32 就是slab通用缓冲区。注意kmalloc-x都对应一个dma-kmalloc-x类型的slab通用缓冲区，这种类型是使用了ZONE_DMA区域的内存，方便用于DMA模式申请内存。
 
-#### 2 Slab专用缓冲区的建立和释放
+##### 2 Slab专用缓冲区的建立和释放
 
 专用缓冲区主要用于频繁使用的数据结构，如task_struct、mm_struct、vm_area_struct、 file、 dentry、
 inode等。缓冲区是用struct kmem_cache结构体类型描述的，通过kmem_cache_create（）来建立，函数原型为：
@@ -498,7 +504,7 @@ slab必须调用__alloc_pages()获取新的页面，flags是传递给该函数�
 
    这样就能把cachep中的对象objp标记为空闲了。
 
-#### 3 Slab分配举例
+##### 3 Slab分配举例
 
 让我们考察一个实际的例子，这个例子用的是task_struct结构（进程控制块），代码取自kernel/fork.c。
 
@@ -571,7 +577,7 @@ if (err)
 
 如果要频繁创建很多相同类型的对象，那么，就应该考虑使用slab缓冲区。确切地说，不要自己去实现空闲链表！
 
-#### 4. 通用缓冲区
+##### 4. 通用缓冲区
 
 在内核中初始化开销不大的数据结构可以合用一个通用的缓冲区。通用缓冲区最小的为32字节，然后依次为64、128、…直至128K（即32个页面），但是，对通用缓冲区的管理又采用的是Slab方式。从通用缓冲区中分配和释放缓冲区的函数为：
 
@@ -603,17 +609,35 @@ if (!buf)
 
 kfree(buf)
 
-#### 5 进化版slab分配器——slub
+#### 4.4.5.2 进化版Slab分配器——Slub
 多年以来，Linux内核中一直使用slab分配器来完成小内存的分配，但是，随着系统规模的不断增大，Slab逐渐暴露出自身的不足：Slab分配器为了增加分配速度，引入了一些管理数组，如Slab管理区中的kmem_bufctl数组，但是增加了一定的复杂性，随着系统越来越庞大，对内催的开销也越明显；Slab分配器中的每个结点都有三个链表：空闲slab链表、部分空slab链表、已满slab链表，这三个链表维护者对应的slab缓冲区。随着内存分配变得复杂，不利于内存的合理使用；对NUMA支持复杂等。为了解决这些问题，内核开发人员Christoph Lameter 在 Linux 内核 2.6.22 版本中引入一种新的解决方案：SLUB 分配器。
-相比于Slab分配器，Slub分配器的设计更加简化，同时保留了Slab分配器的基本思想，并兼容Slab的对外接口，可以容易的使用Slub更换原有的Slab分配器。Slub是在Slab的基础上进行了优化，其都是由kmem_cache结构体标识一块缓冲区，在Slub分配器中kmem_cache_node结构体中去除了全部空闲slab链表，全满slab链表只有在 编译时开启了CONFIG_SLUB_DEBUG选项时才会生效，在Slub分配器中主要用于调试。kmem_cache_node结构体如下所示。
+
+相比于Slab分配器，Slub分配器的设计更加简化，同时保留了Slab分配器的基本思想，并兼容Slab的对外接口，可以容易的使用Slub更换原有的Slab分配器。Slub是在Slab的基础上进行了优化，其都是由kmem_cache结构体标识一块缓冲区，Slub的kmem_cache结构体定义如下所示，并对重要的字段进行了解释。
+```
+struct kmem_cache {
+	struct kmem_cache_cpu __percpu *cpu_slab;	/* 为每个CPU创建一个本地的slab缓存，优先从该缓存中分配 */
+	unsigned long flags;		/* 对象分配标志，常使用SLAB_HWCACHE_ALIGN标志，表示创建的kmem_cache管理的对象按照硬件cache对齐 */
+	unsigned long min_partial;	/* 限制struct kmem_cache_node中的partial链表中slab的数量 */
+	int size;		/* 分配给对象的内存大（对齐后的大小，可能大于实现对象） */
+	int object_size;	/* 对象的实际大小 */
+	int cpu_partial;	/* per CPU中空闲slab对象的最大值，超过该值将其移动到kmem_cache_node中的partial链表 */
+
+	void (*ctor)(void *);	/* 创建slab时的构造函数 */
+	const char *name;	/* kmem_cache的名称，在/proc/slabinfo中可以看到 */
+	struct list_head list;	/* slab缓存链表*/
+	……
+	struct kmem_cache_node *node[MAX_NUMNODES]; /* slab节点，在NUMA系统中，每个node都有一个struct kmem_cache_node的数据结构 */
+};
+```
+每个CPU都对应一个struct kmem_cache_cpu结构体，描述符CPU的本地slab缓存；Slub分配器中kmem_cache_node结构体和Slab中有所区别，其中去除了全部空闲slab链表，全满slab链表只有在 编译时开启了CONFIG_SLUB_DEBUG选项时才会生效，在Slub分配器中主要用于调试。kmem_cache_node结构体如下所示。
 ```
 struct kmem_cache_node {
 	spinlock_t list_lock;
 	……   /*slab 相关*/
 
 #ifdef CONFIG_SLUB     /* slub相关 */
-	unsigned long nr_partial;
-	struct list_head partial;
+	unsigned long nr_partial;   /* 当前节点中的slab数量 */
+	struct list_head partial;   /* slab部分空闲的双向循环链表 */
 #ifdef CONFIG_SLUB_DEBUG
 	atomic_long_t nr_slabs;
 	atomic_long_t total_objects;
@@ -622,6 +646,14 @@ struct kmem_cache_node {
 #endif
 }
 ```
+Slub分配器相关的主要字段有：list_lock表示一个自旋锁；nr_partial表示当前节点中的slab数量；partial表示一个双向循环链表，其中的slab部分空闲；最后几个字段就是上文提到的用于调试时使用。相比于Slab机制的组成，Slub的组成更加简单，如图4_slub所示。
+<div style="text-align: center">
+<img src="4_slub.png"/>
+</div>
+
+<center>图4.slub Slub的组成</center>
+
+为了保证内核其它模块能够无缝迁移到Slub分配器，Slub保留了原有Slab分配器所有的接口API函数，在上一小节已经进行了简单的介绍，此处就不再介绍。
 
 ### 4.4.6 内核空间非连续内存区的分配
 
