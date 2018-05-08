@@ -637,7 +637,7 @@ struct kmem_cache_cpu {
 #endif
 };
 ```
-&emsp; &emsp;page字段指向CPU当前正在使用的slab缓冲区描述符，内核中slab缓冲区描述符与页描述符共用一个struct page结构，freelist会指向此slab的下一个空闲对象；partial字段为struct page结构体类型，表示CPU的部分空slab链表，放到CPU的部分空slab链表中的slab会被冻结，而放入node中的部分空slab链表则解冻。Slab分配器中每CPU中保存的是空闲对象链表，而Slab分配器中的每CPU中保存的是一个slab缓冲区。
+&emsp; &emsp;page字段指向CPU当前正在使用的slab缓冲区描述符，内核中slab缓冲区描述符与页描述符共用一个struct page结构，freelist会指向此slab的下一个空闲对象，若freelist存在，申请对象时则会直接分配freelist指向的对象；partial字段为struct page结构体类型，表示CPU的部分空slab链表，放到CPU的部分空slab链表中的slab会被冻结，而放入node中的部分空slab链表则解冻。Slab分配器中每CPU中保存的是空闲对象链表，而Slab分配器中的每CPU中保存的是一个slab缓冲区。
 &emsp; &emsp;Slub分配器中kmem_cache_node结构体和Slab中有所区别，其中去除了全部空闲slab链表，全满slab链表只有在 编译时开启了CONFIG_SLUB_DEBUG选项时才会生效，在Slub分配器中主要用于调试。kmem_cache_node结构体如下所示。
 ```
 struct kmem_cache_node {
