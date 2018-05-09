@@ -144,8 +144,7 @@ asm volatile(“movl %0,%%cr3”: :”r” (__pa(next->pgd));
 
 <div style="text-align: center">
 <img src="4_6.png"/>
-
-<center>图4.6 系统启动后的物理内存布局</center>
+<br/><center>图4.6 系统启动后的物理内存布局</center></br>
 
 &emsp;&emsp;然而，在正常运行时，整个内核映像应该在虚拟内存的内核空间中，因为连接程序在连接内核映像时，在所有的符号地址上加一个偏移量PAGE_OFFSET，这样，内核映像在内核空间的起始地址就为0xC0100000。
 
