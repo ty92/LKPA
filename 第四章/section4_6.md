@@ -162,8 +162,8 @@ int main(void)
 然后再/proc/devices文件中查找该设备对应的主设备号
 ```c
 #grep map_driver /proc/devices
-```
 250 mapdrv
+```
 
 （假设你得到的数是251）
 ```c
