@@ -8,9 +8,9 @@
 
 #### 4.6.1 相关背景知识
 
-&emsp; &emsp;我们知道，在内核空间中调用kmalloc()分配连续物理空间，而调用vmalloc()分配非物理连续空间。在这里，我们把kmalloc()所分配内核空间中称为**内核逻辑空间（Kernel Logic Space）**。它所分配的内核空间虚地址和物理地址都是连续的，所以很容易获得其对应的实际物理地址，即“内核虚地址－PAGE_OFFSET＝实际的物理地址”。另外，由于系统在初始化时就建立了内核页表“swapper_pg_dir”，而kmalloc()分配过程所使用的就是该页表，因此也省去了建立和更新页表的工作。
+&emsp; &emsp;我们知道，在内核空间中调用kmalloc()分配连续物理空间，而调用vmalloc()分配非物理连续空间。在这里，我们把kmalloc()所分配内核空间中称为**内核逻辑空间（Kernel Logic Space）**。它所分配的内核空间虚地址和物理地址都是连续的，两者是线性映射关系，所以很容易获得其对应的实际物理地址，即“内核虚地址－PAGE_OFFSET＝实际的物理地址”。另外，由于系统在初始化时就建立了内核页表“swapper_pg_dir”，而kmalloc()分配过程所使用的就是该页表，因此也省去了建立和更新页表的工作。
 
-&emsp; &emsp;我们把vmalloc()分配的内核空间中称为**内核虚拟空间（Kernel Virtual Space,简称KVS）**，它的映射相来说较复杂，这是因为其分配的内核空间位于非连续区，如图4.13所示，所采用的数据结构是vm_struct。vamlloc()分配的内核空间地址所对应的物理地址并非可通过简单线性运算获得，从这个意义上说，它的物理地址在分配前是不确定的，虽然vmalloc()分配空间与kmalloc()一样都是由内核页表来映射的，但vmalloc()在分配过程中须更新内核页表[^2]。
+&emsp; &emsp;我们把vmalloc()分配的内核空间中称为**内核虚拟空间（Kernel Virtual Space,简称KVS）**，它的映射相来说较复杂，这是因为其分配的内核空间位于非连续区，如图4.17所示。vamlloc()分配的内核空间地址所对应的物理地址并非可通过简单线性运算获得，从这个意义上说，它的物理地址在分配前是不确定的，虽然vmalloc()分配空间与kmalloc()一样都是由内核页表来映射的，但vmalloc()在分配过程中须更新内核页表[^2]。
 
 [^2]: 内核页表把内核空间映射到物理内存，其中vmalloc和kmalloc分配的物理内存都由内核页表描述；同理用户页表把用户空间映射到物理内存。
 
@@ -88,7 +88,7 @@ nopage方法主要操作是“寻找到内核虚拟空间中的地址对应的�
 1) 在/proc/devices下找到map_driver对应的设备命和设备号：grep mapdrv
 /proc/devices
 
-2) 建立设备文件mknod mapfile c 254 0 （在我这里的设备号为254）
+2) 建立设备文件mknod mapfile c 250 0 （在我这里的设备号为250）
 
 利用用户测试程序maptest读取mapfile文件，将存放在内核的信息打印到用户屏幕。
 
@@ -110,7 +110,7 @@ int main(void)
 		int fd;
 		char *vadr;
 		
-		if ((fd = open("/dev/mapdrv0", O_RDWR)) < 0) {
+		if ((fd = open("/dev/mapdrv", O_RDWR)) < 0) {
 				perror("open");
 				exit(-1);
 		}
@@ -171,333 +171,190 @@ struct mapdrv{
 #include<linux/mman.h>
 
 #include "map_driver.h"
+
 #define MAPLEN (PAGE_SIZE*10)
 
-int mapdrv_open(struct inode *inode, struct file *file); /* 打开设备 */
-int mapdrv_release(struct inode *inode, struct file *file); /*关闭设备 */
-int mapdrv_mmap(struct file *file, struct vm_area_struct *vma); /*设备的mmap函数 */
-void map_vopen(struct vm_area_struct *vma); /* 打开虚存区 */
-void map_vclose(struct vm_area_struct *vma); /* 关闭虚存区 */
-struct page *map_nopage(struct vm_area_struct *vma, unsigned long address, int *type); /* 虚存区的缺页处理函数 */
+int mapdrv_open(struct inode *inode, struct file *file);               /* 打开设备 */
+int mapdrv_release(struct inode *inode, struct file *file);            /*关闭设备 */
+int mapdrv_mmap(struct file *file, struct vm_area_struct *vma);        /*设备的mmap函数 */
+void map_vopen(struct vm_area_struct *vma);                            /* 打开虚存区 */
+void map_vclose(struct vm_area_struct *vma);                           /* 关闭虚存区 */
+int map_fault(struct vm_area_struct *vma, struct vm_fault *vmf); /* 虚存区的缺页处理函数 */
 
 static struct file_operations mapdrv_fops = {
-		.owner = THIS_MODULE,
-		.mmap = mapdrv_mmap,
-		.open = mapdrv_open,
-		.release = mapdrv_release,
+        .owner = THIS_MODULE,
+        .mmap = mapdrv_mmap,
+        .open = mapdrv_open,
+        .release = mapdrv_release,
 };
 
 static struct vm_operations_struct map_vm_ops = {
-		.open = map_vopen,
-		.close = map_vclose,
-		.nopage = map_nopage,
+        .open = map_vopen,
+        .close = map_vclose,
+        .fault = map_fault,
 };
 
 static int *vmalloc_area = NULL;
-
-static int major; /*设备的主设备号*/
-
-volatile void *vaddr_to_kaddr(volatile void *address)
-
-{
-
-		pgd_t *pgd; /*全局页目录*/
-
-		pmd_t *pmd; /*中间页目录*/
-
-		pte_t *ptep, pte; /*页表项*/
-
-		unsigned long va, ret = 0UL;
-
-		va = (unsigned long)address; /*把address转换成无符号长整型的虚地址*/
-
-		pgd = pgd_offset_k(va); /* 获取页目录*/
-
-		if (!pgd_none(*pgd)) { /
-
-				pmd = pmd_offset(pgd, va); /*获取中间页目录 */
-
-				if (!pmd_none(*pmd)) {
-
-						ptep = pte_offset_kernel(pmd, va); /*获取指向页表项的指针 */
-
-						pte = *ptep;
-
-						if (pte_present(pte)) {
-
-								ret =(unsigned long)page_address(pte_page(pte)); /*获取页起始地址 */
-
-								ret |= (va & (PAGE_SIZE - 1)); /*把页偏移量加到页地址上 */
-
-						}
-
-				}
-
-		}
-
-		return ((volatile void *)ret);
-
-}
+static dev_t dev;
 
 struct mapdrv* md;
-
 MODULE_LICENSE("GPL");
 
 static int __init mapdrv_init(void) /*驱动程序初始化 */
-
 {
+        unsigned long virt_addr;
+        int result, err;
+	struct page *page;
+	long pfn;
 
-		unsigned long virt_addr;
+	printk(KERN_INFO "insmod kernel module\n");
+        dev = MKDEV(0, 0);
+        md = kmalloc(sizeof(struct mapdrv), GFP_KERNEL);
+        if (!md)
+                goto fail1;
 
-		int result, err;
+        result = alloc_chrdev_region(&dev, 0, 1, "mapdrv");
+        if (result < 0) {
+                printk(KERN_WARNING "mapdrv: can't get major.\n");
+                goto fail2;
+        }
 
-		dev_t dev = 0;
+        cdev_init(&md->mapdev, &mapdrv_fops);
+        md->mapdev.owner = THIS_MODULE;
+        md->mapdev.ops = &mapdrv_fops;
+        err = cdev_add (&md->mapdev, dev, 1);
+        if (err) {
+                printk(KERN_NOTICE "Error %d adding mapdrv", err);
+                goto fail3;
+        }
+        atomic_set(&md->usage, 0);
 
-		dev = MKDEV(0, 0);
+        vmalloc_area = vmalloc(MAPLEN); /* 在非连续区获得一块内存区*/
+        if (!vmalloc_area)
+                goto fail4;
 
-		major = MAJOR(dev); /*获取主设备号 */
+        for (virt_addr = (unsigned long)vmalloc_area;
+             virt_addr < (unsigned long)(&(vmalloc_area[MAPLEN / sizeof(int)]));
+             virt_addr += PAGE_SIZE) {
+                //SetPageReserved(virt_to_page(vaddr_to_kaddr((void *)virt_addr))); /*使缓存的页面常驻内存 */
+		page = vmalloc_to_page((void*)virt_addr);
+		page->flags |= PG_reserved;	/*设置page的PG_reserved标志，使缓存的页面常驻内存（不能换出） */
+        }
+        
+        strcpy((char *)vmalloc_area, "hello world from kernel space !");          /*把信息放在内核空间，供用户读取*/
 
-		md = kmalloc(sizeof(struct mapdrv), GFP_KERNEL);
+	pfn = vmalloc_to_pfn((void*)vmalloc_area);
+        printk("vmalloc_area at 0x%p (pfn %ld)\n", vmalloc_area, pfn);
 
-		if (!md)
-
-				goto fail1;
-
-		result = alloc_chrdev_region(&dev, 0, 1, "mapdrv");
-
-		if (result < 0) {
-
-				printk(KERN_WARNING "mapdrv: can't get major %dn", major);
-
-				goto fail2;
-
-		}
-
-		cdev_init(&md->mapdev, &mapdrv_fops);
-
-		md->mapdev.owner = THIS_MODULE;
-
-		md->mapdev.ops = &mapdrv_fops;
-
-		err = cdev_add (&md->mapdev, dev, 1);
-
-		if (err) {
-
-				printk(KERN_NOTICE "Error %d adding mapdrv", err);
-
-				goto fail3;
-
-		}
-
-		atomic_set(&md->usage, 0);
-
-		vmalloc_area = vmalloc(MAPLEN); /* 在非连续区获得一块内存区*/
-
-		if (!vmalloc_area)
-
-		goto fail4;
-
-		for (virt_addr = (unsigned long)vmalloc_area;
-
-virt_addr < (unsigned long)(&(vmalloc_area[MAPLEN / sizeof(int)]));
-
-virt_addr += PAGE_SIZE) {
-
-				SetPageReserved(virt_to_page
-
-(vaddr_to_kaddr((void *)virt_addr))); /*使缓存的页面常驻内存 */
-
-}
-
-				strcpy((char *)vmalloc_area, "hello world from kernel space !");
-/*把信息放在内核空间，供用户读取*/
-
-				printk("vmalloc_area at 0x%p (phys 0x%lx)n", vmalloc_area,
-
-virt_to_phys((void *)vaddr_to_kaddr(vmalloc_area)));
-
-				return 0;
-
+        return 0;
 fail4:
-
-		cdev_del(&md->mapdev);
-
+        cdev_del(&md->mapdev);
 fail3:
-
-		unregister_chrdev_region(dev, 1);
-
+        unregister_chrdev_region(dev, 1);
 fail2:
-
-		kfree(md);
-
+        kfree(md);
 fail1:
-
-		return -1;
-
+        return -1;
 }
 
 static void __exit mapdrv_exit(void)
-
 {
+        unsigned long virt_addr;
+	struct page *page;
 
-		unsigned long virt_addr;
+        for (virt_addr = (unsigned long)vmalloc_area;
+             virt_addr < (unsigned long)(&(vmalloc_area[MAPLEN / sizeof(int)]));
+             virt_addr += PAGE_SIZE) {
+		page = vmalloc_to_page((void*)virt_addr);
+		page->flags &= ~PG_reserved;	/*内核模块退出，去除PG_reserved标志，页面可以被换出 */
+        }
 
-		dev_t devno = MKDEV(major, 0);
+        if (vmalloc_area)
+             vfree(vmalloc_area); /* 释放所分配的区间*/
 
-		for (virt_addr = (unsigned long)vmalloc_area;
-
-virt_addr < (unsigned long)(&(vmalloc_area[MAPLEN / sizeof(int)]));
-
-virt_addr += PAGE_SIZE) {
-
-				ClearPageReserved(virt_to_page
-
-(vaddr_to_kaddr((void *)virt_addr))); /*收回在内存保留的所有页面 */
-
-		}
-
-		if (vmalloc_area)
-
-				vfree(vmalloc_area); /* 释放所分配的区间*/
-
-		cdev_del(&md->mapdev);
-
-		unregister_chrdev_region(devno, 1); /*注销设备*/
-
-		kfree(md);
-
+        cdev_del(&md->mapdev);		/* 删除字符设备 */
+        unregister_chrdev_region(dev, 1); /*注销设备号*/
+        
+	printk(KERN_INFO "unregister chrdev\n");
+        kfree(md);
 }
 
-int mapdrv_open(struct inode *inode, struct file *file) /* 打开设备的函数
-*/
-
+/* 打开设备的函数*/
+int mapdrv_open(struct inode *inode, struct file *file)
 {
+        struct mapdrv *md;
+        md = container_of(inode->i_cdev, struct mapdrv, mapdev); /*获得md的起始地址*/
+        atomic_inc(&md->usage); /*引用数加1 */
 
-		struct mapdrv *md;
-
-		md = container_of(inode->i_cdev, struct mapdrv, mapdev); /*
-获得md的起始地址*/
-
-		atomic_inc(&md->usage); /*引用数加1 */
-
-		return (0);
-
+        return (0);
 }
 
-int mapdrv_release(struct inode *inode, struct file *file) /*关闭设备的方法
-*/
-
+/*关闭设备的方法*/
+int mapdrv_release(struct inode *inode, struct file *file)
 {
-
-		struct mapdrv* md;
-
-		md = container_of(inode->i_cdev, struct mapdrv, mapdev);
-
-		atomic_dec(&md->usage); /*引用数减1 */
-
-		return (0);
-
+        struct mapdrv* md;
+        md = container_of(inode->i_cdev, struct mapdrv, mapdev);
+        atomic_dec(&md->usage); /*引用数减1 */
+ 
+        return (0);
 }
 
 int mapdrv_mmap(struct file *file, struct vm_area_struct *vma)
-
 {
+        unsigned long offset = vma->vm_pgoff << PAGE_SHIFT; /* 求出偏移量*/
+        unsigned long size = vma->vm_end - vma->vm_start;
 
-		unsigned long offset = vma->vm_pgoff << PAGE_SHIFT; /* 求出偏移量*/
+        if (offset & ~PAGE_MASK) { /* 如果偏移量没有在页边界，说明没有对齐*/
+                printk("offset not aligned: %ld\n", offset);
+                return -ENXIO;
+        }
+        if (size > MAPLEN) {
+                printk("size too big\n");
+                return (-ENXIO);
+        }
 
-		unsigned long size = vma->vm_end - vma->vm_start;
+        /* 仅支持共享映射 */
+        if ((vma->vm_flags & VM_WRITE) && !(vma->vm_flags & VM_SHARED)) {
+                printk("writeable mappings must be shared, rejecting\n");
+                return (-EINVAL);
+        }
 
-		if (offset & ~PAGE_MASK) { /* 如果偏移量没有在页边界，说明没有对齐*/
-
-				printk("offset not aligned: %ldn", offset);
-
-				return -ENXIO;
-
-		}
-
-		if (size > MAPLEN) {
-
-				printk("size too bign");
-
-				return (-ENXIO);
-
-		}
-
-/* 仅支持共享映射 */
-
-		if ((vma->vm_flags & VM_WRITE) && !(vma->vm_flags & VM_SHARED)) {
-
-				printk("writeable mappings must be shared, rejectingn");
-
-				return (-EINVAL);
-
-		}
-
-		vma->vm_flags |= VM_LOCKED; /*不要让这个区换出，锁住它*/
-
-		if (offset == 0) {
-
-				vma->vm_ops = &map_vm_ops;
-
-				map_vopen(vma); /* 增加引用计数*/
-
-		} else {
-
-				printk("offset out of rangen");
-
-				return -ENXIO;
-
-		}
-
-		return (0);
-
+        vma->vm_flags |= VM_LOCKED; /*不要让这个区换出，锁住它*/
+        if (offset == 0) {
+                vma->vm_ops = &map_vm_ops;
+                map_vopen(vma); /* 增加引用计数*/
+        } else {
+                printk("offset out of range\n");
+                return -ENXIO;
+        }
+        return 0;
 }
 
 /* 打开虚存区的函数 */
-
 void map_vopen(struct vm_area_struct *vma)
-
 {
-
-/*当有人还在使用内存映射时，需要保护该模块以免被卸载 */
-
+        /*当有人还在使用内存映射时，需要保护该模块以免被卸载 */
 }
 
 /* 关闭虚存区的函数 */
-
 void map_vclose(struct vm_area_struct *vma)
-
 {
-
 }
 
 /* 缺页处理函数 */
-
-struct page *map_nopage(struct vm_area_struct *vma, unsigned long address,
-
-int *type)
-
+int map_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
+        unsigned long offset;
 
-		unsigned long offset;
+        /*确定vmalloc()所分配区中的偏移量 */
+        offset = (unsigned long)vmf->virtual_address - (unsigned long)vma->vm_start;
+        
 
-		unsigned long virt_addr;
-
-/*确定vmalloc()所分配区中的偏移量 */
-
-		offset = address - vma->vm_start + (vma->vm_pgoff << PAGE_SHIFT);
-
-/* 把 vmalloc地址转换成 kmalloc地址*/
-		virt_addr =
-(unsigned long)vaddr_to_kaddr(&vmalloc_area[offset / sizeof(int)]);
-		if (virt_addr == 0UL) {
-				return ((struct page *)0UL);
-		}
-		get_page(virt_to_page(virt_addr)); /* 增加页的引用计数*/
-		printk("map_drv: page fault for offset 0x%lx (kseg x%lx)n", offset,virt_addr);
-		return (virt_to_page(virt_addr));
+	vmf->page = vmalloc_to_page(&vmalloc_area[offset/sizeof(int)]);
+        get_page(vmf->page); /* 增加页的引用计数*/
+        printk("map_drv: page fault for offset 0x%lx (pfn %ld)\n", offset,vmalloc_to_pfn(&vmalloc_area[offset/sizeof(int)]));
+        return 0;
 }
-
 module_init(mapdrv_init);
 module_exit(mapdrv_exit);
 ```
