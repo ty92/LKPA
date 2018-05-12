@@ -28,11 +28,11 @@
 
 &emsp; &emsp;如前所述，我们把内核空间分为**内核逻辑空间**和**内核虚拟空间**，我们的目标是把vmalloc()分配的**内核虚拟空间**映射到用户空间。（这里没有选择kmalloc()，是因为它的映射关系过于简单，而作为教学，我们主要目的就是找到内核地址对应的物理地址，因此我们选择更为复杂的内核虚拟空间，它更能体现映射场景）。
 
-&emsp; &emsp;我们知道，用户进程操作的是虚存区vm_area_struct，我们此刻需要利用用户页表将用户虚存区映射到物理内存，如图4.18所示。这里主要工作便是建立用户页表项，从而完成映射工作。这个操作由用户虚拟区操作表中的vma->nopage[^3]方法完成，当发生“缺页”时，该方法会帮助我们动态构造被映射物理内存的用户页表项。（注意这里并非一次就全部映射我们所需要的空间，而是在缺页时动态地一次一次地在现场完成映射）。
+&emsp; &emsp;我们知道，用户进程操作的是虚存区vm_area_struct，我们此刻需要利用用户页表将用户虚存区映射到物理内存，如图4.18所示。这里主要工作便是建立用户页表项，从而完成映射工作。这个操作由用户虚拟区操作表中的vma->fault[^3]方法完成，当发生“缺页”时，该方法会帮助我们动态构造被映射物理内存的用户页表项。（注意这里并非一次就全部映射我们所需要的空间，而是在缺页时动态地一次一次地在现场完成映射）。
 
 >1. 内核页表把内核空间映射到物理内存，其中vmalloc和kmalloc分配的物理内存都由内核页表描述；同理用户页表把用户空间映射到物理内存。
 
->2. 除了使用nopage动态地一次一页构造用户页表项外，还可以调用remap_page_range()方法一次构造一段内存范围的页表项，但显然这个方法是针对物理内存连续被分配时使用的，而这里内核虚拟空间对应的物理内存并非连续，所以这里使用nopage。
+>2. 除了使用fault动态地一次一页构造用户页表项外，还可以调用remap_page_range()方法一次构造一段内存范围的页表项，但显然这个方法是针对物理内存连续被分配时使用的，而这里内核虚拟空间对应的物理内存并非连续，所以这里使用fault。
 
 <div style="text-align: center">
 <img src="4_18.png"/>
@@ -41,10 +41,40 @@
 <br/><center>(虚线箭头表示需要建立的新映射关系。 实线箭头表示已有的映射关系)</center></br>  
 <center>图4.18 用户虚存区映射到内核虚拟空间对应的物理内存</center>    
 
-&emsp; &emsp;为了把用户空间的虚存区映射到内核虚拟空间对应的物理内存，我们首先寻找内核虚拟空间中的地址对应的内核逻辑地址。读者会问，为什么不直接映射到物理地址？
-这主要是想利用内核提供的一些现有的例程，例如，把内核虚地址转换成物理地址的宏virt_to_page，这些例程都是针对内核逻辑地址而言的，所以，只要求出内核逻辑地址，只需减去一个偏移量PAGE_OFFSET就得到相应的物理地址。
+&emsp; &emsp;为了把能够将用户空间的虚存区映射到内核虚拟空间对应的物理内存中，查看内核vmalloc()函数实现部分的源码，发现在Linux 3.10源码中存在vmalloc_to_page()函数可以实现将内核虚拟空间的地址转换到物理页面page，将vmalloc()函数的返回的内核虚拟空间中的地址经过四级页表进行转换，得到对应页表pte的地址，最后通过pte_page()函数得到对应的page结构。如下代码所示。
+```
+struct page *vmalloc_to_page(const void *vmalloc_addr)
+{
+	unsigned long addr = (unsigned long) vmalloc_addr;
+	struct page *page = NULL;
+	pgd_t *pgd = pgd_offset_k(addr);
 
-我们需要实现nopage方法，动态建立对应页表，而在该方法中核心任务是找到内核逻辑地址。这就需要我们做以下工作：
+	/*
+	 * XXX we might need to change this if we add VIRTUAL_BUG_ON for
+	 * architectures that do not vmalloc module space
+	 */
+	VIRTUAL_BUG_ON(!is_vmalloc_or_module_addr(vmalloc_addr));
+
+	if (!pgd_none(*pgd)) {
+		pud_t *pud = pud_offset(pgd, addr);
+		if (!pud_none(*pud)) {
+			pmd_t *pmd = pmd_offset(pud, addr);
+			if (!pmd_none(*pmd)) {
+				pte_t *ptep, pte;
+
+				ptep = pte_offset_map(pmd, addr);
+				pte = *ptep;
+				if (pte_present(pte))
+					page = pte_page(pte);
+				pte_unmap(ptep);
+			}
+		}
+	}
+	return page;
+}
+```
+
+我们需要实现fault方法，动态建立对应页表，而在该方法中核心任务是找到内核逻辑地址。这就需要我们做以下工作：
 
 1.  找到vmalloc虚拟内存对应的内核页表，并寻找到对应的内核页表项。
 
@@ -56,16 +86,15 @@
 
 #### 2. 基本函数
 
-&emsp; &emsp;我们实例利用一个虚拟字符驱动程序，将vmalloc()分配的一定长的内核虚拟地址映射到设备文件[^3]，以便可以通过访问文件内容来达到访问内存的目的。这样除了提高内存访问速度外，还可以让用户利用文件系统的编程接口访问内存，降低了开发难度。
+&emsp; &emsp;我们利用一个虚拟字符驱动程序，将vmalloc()分配的一定长的内核虚拟地址映射到设备文件[^3]，以便可以通过访问文件内容来达到访问内存的目的。这样除了提高内存访问速度外，还可以让用户利用文件系统的编程接口访问内存，降低了开发难度。
  
+&emsp; &emsp;Map_driver.c就是虚拟字符驱动程序。为了要完成内存映射，除了常规的open()/release()操作外，必须自己实现mmap()操作，该函数将给定的文件映射到指定的地址空间上，也就是说它将负责把vmalloc()分配的内核地址映射到设备文件上。
 
-&emsp; &emsp;Map_driver.c就是我们的虚拟字符驱动程序。为了要完成内存映射，除了常规的open()/release()操作外，必须自己实现mmap()操作，该函数将给定的文件映射到指定的地址空间上，也就是说它将负责把vmalloc()分配的内核地址映射到我们的设备文件上。
+&emsp; &emsp;文件操作表中的mmap()是在用户进程调用mmap()系统调用时被执行的，而且在调用前内核已经给用户进程找到并分配了合适的虚存区vm_area_struct，这个区将代表文件内容，所以接着要做的是如何把虚存区和物理内存挂接到一起了，即构造页表。由于前面所说的原因，系统中页表需要动态分配，因此不可使用remap_page_range()函数一次分配完成，而必须使用虚存区操作中的fault方法，在现场一页一页地构造页表。
 
-&emsp; &emsp;文件操作表中的mmap()是在用户进程调用mmap()系统调用时被执行的，而且在调用前内核已经给用户进程找到并分配了合适的虚存区vm_area_struct，这个区将代表文件内容，所以接着要做的是如何把虚存区和物理内存挂接到一起了，即构造页表。由于我门前面所说的原因，系统中页表需要动态分配，因此不可使用remap_page_range函数一次分配完成，而必须使用虚存区操作中的nopage方法，在现场一页一页地构造页表。
+mmap()方法的主要操作是为它得到的虚存区绑定对应的操作表vm_operations_struct。于是构造页表的主要操作就由虚存区操作表的fault方法来完成。
 
-mmap()方法的主要操作是“为它得到的虚存区绑定对应的操作表vm_operations”。于是构造页表的主要操作就由虚存区操作表的nopage方法来完成。
-
-nopage方法主要操作是“寻找到内核虚拟空间中的地址对应的内核逻辑地址”。这个解析内核页表的工作是由我们编写的辅助函数vaddr_to_kaddr来完成的，它所做的工作概括来就是完成上文提到的abc三条。
+fault方法主要操作是寻找到内核虚拟空间中的地址对应的物理页框page。
 
 整个任务执行路径如图4.19所示。
 
@@ -75,22 +104,21 @@ nopage方法主要操作是“寻找到内核虚拟空间中的地址对应的�
 
 <center>图4.19 从mmap()到获得内核逻辑地址的执行路径</center>
 
-> 3. Linux中的设备是一个 广义的概念，不仅仅指物理设备。这里的设备实际上是指vmalloc()所分配的一块区域。之所以以设备驱动程序的方式实现，是为了把所实现的内容以模块的方式插入内核，有关模块的内容参见附录A。
+> 3. Linux中的设备是一个广义的概念，不仅仅指物理设备。这里的设备实际上是指vmalloc()所分配的一块区域。之所以以设备驱动程序的方式实现，是为了把所实现的内容以模块的方式插入内核，有关模块的内容参见附录A。
 
 ### 4.6.3 一步一步 
 
-编译map_driver.c为map_driver.o模块，具体参数见Makefile
+编译map_driver.c为map_driver.ko模块，具体参数见Makefile
 
-加载模块 ：insmod map_driver.o
+加载模块 ：insmod map_driver.ko
 
 生成对应的设备文件
 
-1) 在/proc/devices下找到map_driver对应的设备命和设备号：grep mapdrv
-/proc/devices
+1) 在/proc/devices下找到map_driver对应的设备命和设备号：grep mapfile /proc/devices
 
-2) 建立设备文件mknod mapfile c 250 0 （在我这里的设备号为250）
+2) 建立设备文件mknod /dev/mapfile c 254 0 （假如在我这里的设备号为254）
 
-利用用户测试程序maptest读取mapfile文件，将存放在内核的信息打印到用户屏幕。
+利用用户测试程序maptest读取/dev/mapfile文件，将存放在内核的信息打印到用户屏幕。
 
 ### 4.6.4 程序代码
 
@@ -127,7 +155,7 @@ int main(void)
 }
 ```
 
-从上面我们可以清楚地看出，要映射的设备文件为/dev/mapdrv0，所以我们在插入内核模块时应该进行如下操作：
+从上面我们可以清楚地看出，要映射的设备文件为/dev/mapdrv，所以我们在插入内核模块时应该进行如下操作：
 ```c
 # insmod map_driver.ko
 ```
@@ -135,11 +163,11 @@ int main(void)
 ```c
 #grep map_driver /proc/devices
 ```
-251 mapdrv
+250 mapdrv
 
 （假设你得到的数是251）
 ```c
-#mknod /dev/mapdrv0 c 251 0
+#mknod /dev/mapdrv c 250 0
 #gcc -Wall -o maptest maptest.c
 # ./maptest
 hello world from kernel space !
@@ -179,7 +207,7 @@ int mapdrv_release(struct inode *inode, struct file *file);            /*关闭�
 int mapdrv_mmap(struct file *file, struct vm_area_struct *vma);        /*设备的mmap函数 */
 void map_vopen(struct vm_area_struct *vma);                            /* 打开虚存区 */
 void map_vclose(struct vm_area_struct *vma);                           /* 关闭虚存区 */
-int map_fault(struct vm_area_struct *vma, struct vm_fault *vmf); /* 虚存区的缺页处理函数 */
+int map_fault(struct vm_area_struct *vma, struct vm_fault *vmf); 	/* 虚存区的缺页处理函数 */
 
 static struct file_operations mapdrv_fops = {
         .owner = THIS_MODULE,
