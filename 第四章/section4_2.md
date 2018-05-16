@@ -592,6 +592,15 @@ static int __init memtest_init(void)
     return 0;
 }
 
+static void __exit memtest_exit(void)
+{
+        printk("Unloading my module.\n");
+        return;
+}
+
+module_init(memtest_init);
+module_exit(memtest_exit);
+MODULE_LICENSE("GPL");
 ```        
 
 编译模块，运行例4-1中的程序,然后带参数插入模块，如下：
